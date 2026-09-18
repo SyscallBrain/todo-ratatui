@@ -3,14 +3,22 @@
 //! Esta camada pode (e deve) depender de [`crate::core`]; o contrário não é
 //! permitido.
 //!
-//! Estado actual: esqueleto do T1 — o loop, o `init`/`restore` e o caminho da
-//! base de dados já são reais; o desenho é um marcador que o T6 substitui
-//! (o layout depende do @designer) e as teclas são o mínimo para sair (`q`,
-//! `Esc`).
+//! Estado actual: o estado da aplicação e as teclas já são reais — [`app::App`]
+//! guarda a seleção, o modo, a mensagem, a ordem, o filtro e a busca, e
+//! [`event::map_key`] traduz a tabela de teclas do @designer. O loop, o
+//! `init`/`restore` e o caminho da base de dados também já são reais; o desenho
+//! é um marcador que o T6 substitui (o layout depende do @designer) e é o T7 que
+//! liga o loop ao [`app::App`].
+
+pub mod app;
+pub mod event;
+
+pub use app::{App, Status};
+pub use event::{Action, InputMode, map_key};
 
 use std::io;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Frame;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
@@ -34,7 +42,7 @@ pub fn run(store: Store) -> io::Result<()> {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, store: &Store) -> io::Result<()> {
     loop {
         terminal.draw(|frame| draw(frame, store))?;
-        if let Event::Key(key) = event::read()?
+        if let Event::Key(key) = crossterm::event::read()?
             && handle_key(key)
         {
             return Ok(());
