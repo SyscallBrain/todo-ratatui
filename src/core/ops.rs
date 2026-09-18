@@ -262,6 +262,45 @@ impl Store {
         !self.db().trash.is_empty()
     }
 
+    /// Esvazia o lixo e grava; devolve quantas entradas saíram.
+    ///
+    /// Não toca em `todos` e **não** mexe em [`Db::trash_dropped`]: esse é o
+    /// contador acumulado do transbordo (o que o limite de 100 deitou fora),
+    /// não o que está no lixo. Lixo vazio é `Ok(0)` e não grava nada.
+    pub fn empty_trash(&mut self) -> Result<usize, OpsError> {
+        let entradas = self.db().trash.len();
+        if entradas == 0 {
+            return Ok(0);
+        }
+        self.db_mut().trash.clear();
+        self.save()?;
+        Ok(entradas)
+    }
+
+    /// Repõe a tarefa indicada na posição original e devolve onde ficou
+    /// (índice na lista).
+    ///
+    /// É o `Enter` da vista do lixo: actua sobre **uma** entrada, com o mesmo
+    /// critério de reposição do [`Store::restore_last_batch`] (índice limitado
+    /// ao tamanho actual, ordem relativa preservada). Repor uma tarefa de um
+    /// lote de várias não apaga o resto do lote — a pilha do `u` continua a ser
+    /// por lote. `id` que não está no lixo é erro, nunca panic.
+    pub fn restore(&mut self, id: &TodoId) -> Result<usize, OpsError> {
+        let posicao_no_lixo = self
+            .db()
+            .trash
+            .iter()
+            .position(|entrada| &entrada.todo.id == id)
+            .ok_or_else(|| OpsError::NotFound(id.clone()))?;
+
+        let db = self.db_mut();
+        let entrada = db.trash.remove(posicao_no_lixo);
+        let posicao = entrada.index.min(db.todos.len());
+        db.todos.insert(posicao, entrada.todo);
+        self.save()?;
+        Ok(posicao)
+    }
+
     /// Restaura o último lote (uma remoção simples ou um «limpar concluídas»
     /// inteiro) nas posições originais e devolve quantas tarefas voltaram.
     ///
@@ -522,5 +561,117 @@ mod tests {
         assert_eq!(store.find(&id).unwrap().title, "original");
         let em_disco = fs::read_to_string(path).unwrap();
         assert!(em_disco.contains("original"));
+    }
+
+    #[test]
+    fn empty_trash_esvazia_o_lixo_e_devolve_quantas_sairam() {
+        let (path, mut store) = store("esvaziar");
+        assert_eq!(store.empty_trash().unwrap(), 0, "lixo vazio é `Ok(0)`");
+        assert_eq!(store.empty_trash().unwrap(), 0, "e não é erro repetir");
+
+        let a = store.add("a").unwrap();
+        let b = store.add("b").unwrap();
+        store.remove(&a).unwrap();
+        store.remove(&b).unwrap();
+        assert_eq!(store.trash_len(), 2);
+
+        assert_eq!(store.empty_trash().unwrap(), 2);
+        assert_eq!(store.trash_len(), 0);
+        assert!(
+            titulos(&store).is_empty(),
+            "esvaziar o lixo não toca em `todos`"
+        );
+        assert!(!store.can_restore());
+
+        let recarregado = Store::open(&path).unwrap();
+        assert_eq!(recarregado.trash_len(), 0, "esvaziar ficou gravado");
+    }
+
+    #[test]
+    fn empty_trash_nao_repoe_a_contagem_do_transbordo() {
+        let (_path, mut store) = store("esvaziar-contagem");
+        let id = store.add("a").unwrap();
+        store.remove(&id).unwrap();
+        store.db_mut().trash_dropped = 7;
+
+        assert_eq!(store.empty_trash().unwrap(), 1);
+        assert_eq!(
+            store.db().trash_dropped,
+            7,
+            "`trash_dropped` é o acumulado do limite, não o que está no lixo"
+        );
+    }
+
+    #[test]
+    fn restore_repoe_uma_tarefa_na_posicao_original_e_sobrevive_ao_reload() {
+        let (path, mut store) = store("restore-id");
+        store.add("a").unwrap();
+        let b = store.add("b").unwrap();
+        store.add("c").unwrap();
+        let d = store.add("d").unwrap();
+        // A ordem das remoções importa: o índice guardado é o da posição na
+        // lista no momento da remoção.
+        store.remove(&d).unwrap(); // índice 3
+        store.remove(&b).unwrap(); // índice 1
+        assert_eq!(titulos(&store), ["a", "c"]);
+
+        // Repõe a que se indica, não a última: «b» volta ao índice 1.
+        assert_eq!(store.restore(&b).unwrap(), 1);
+        assert_eq!(titulos(&store), ["a", "b", "c"]);
+        assert_eq!(store.trash_len(), 1, "«d» continua no lixo");
+        drop(store);
+
+        // Sobrevive a um Ctrl-C: processo novo, mesmo ficheiro.
+        let mut reaberto = Store::open(&path).unwrap();
+        assert_eq!(titulos(&reaberto), ["a", "b", "c"]);
+        assert_eq!(reaberto.trash_len(), 1);
+        assert_eq!(reaberto.restore(&d).unwrap(), 3);
+        assert_eq!(titulos(&reaberto), ["a", "b", "c", "d"]);
+        assert!(!reaberto.can_restore());
+    }
+
+    #[test]
+    fn restore_de_id_que_nao_esta_no_lixo_e_erro_sem_panic() {
+        let (_path, mut store) = store("restore-erro");
+        let na_lista = store.add("na lista").unwrap();
+
+        // Existe na lista mas não no lixo: não é restauro, é erro.
+        let erro = store.restore(&na_lista).expect_err("não está no lixo");
+        assert!(matches!(erro, OpsError::NotFound(_)));
+        assert!(erro.to_string().contains("não existe nenhuma tarefa"));
+
+        let erro = store.restore(&TodoId::new()).expect_err("id inventado");
+        assert!(matches!(erro, OpsError::NotFound(_)));
+
+        let id = store.add("removida").unwrap();
+        store.remove(&id).unwrap();
+        store.restore(&id).unwrap();
+        assert!(
+            matches!(store.restore(&id), Err(OpsError::NotFound(_))),
+            "repor duas vezes o mesmo id é erro, não panic"
+        );
+        assert_eq!(titulos(&store), ["na lista", "removida"]);
+    }
+
+    #[test]
+    fn restore_tira_so_a_entrada_indicada_do_lote() {
+        let (_path, mut store) = store("restore-lote");
+        let primeira = store.add("feita 1").unwrap();
+        store.add("pendente").unwrap();
+        let ultima = store.add("feita 2").unwrap();
+        store.toggle_done(&primeira).unwrap();
+        store.toggle_done(&ultima).unwrap();
+
+        assert_eq!(store.clear_completed().unwrap().removidos, 2);
+        assert_eq!(titulos(&store), ["pendente"]);
+
+        // Uma do lote volta sozinha, na posição original (índice 0).
+        assert_eq!(store.restore(&primeira).unwrap(), 0);
+        assert_eq!(titulos(&store), ["feita 1", "pendente"]);
+        assert_eq!(store.trash_len(), 1, "a outra do lote fica no lixo");
+
+        // O `u` continua a repor o lote — aqui, o que dele resta.
+        assert_eq!(store.restore_last_batch().unwrap(), 1);
+        assert_eq!(titulos(&store), ["feita 1", "pendente", "feita 2"]);
     }
 }

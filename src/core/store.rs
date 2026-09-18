@@ -108,7 +108,7 @@ pub enum StoreError {
         found: u32,
         expected: u32,
     },
-    NoConfigDir,
+    NoDataDir,
     NoBackup(PathBuf),
 }
 
@@ -122,7 +122,7 @@ impl StoreError {
             | Self::NotEnveloped { path }
             | Self::UnsupportedSchema { path, .. }
             | Self::NoBackup(path) => Some(path),
-            Self::NoConfigDir => None,
+            Self::NoDataDir => None,
         }
     }
 }
@@ -157,8 +157,8 @@ impl fmt::Display for StoreError {
                 "schema {found} em «{}» não é suportado (esperado {expected})",
                 path.display()
             ),
-            Self::NoConfigDir => {
-                f.write_str("não consigo determinar o diretório de configuração: define HOME ou XDG_CONFIG_HOME, ou usa --db <caminho>")
+            Self::NoDataDir => {
+                f.write_str("não consigo determinar o diretório de dados: define XDG_DATA_HOME ou HOME, ou usa --db <caminho>")
             }
             Self::NoBackup(path) => write!(
                 f,
@@ -180,8 +180,12 @@ impl std::error::Error for StoreError {
 }
 
 /// Resolve o caminho da base de dados, por ordem de precedência:
-/// `--db <caminho>` → `TODO_RATATUI_DB` → `$XDG_CONFIG_HOME/todo-ratatui/db.json`
-/// → `$HOME/.config/todo-ratatui/db.json`.
+/// `--db <caminho>` → `TODO_RATATUI_DB` → `dirs::data_dir()/todo-ratatui/db.json`
+/// (= `$XDG_DATA_HOME` → `$HOME/.local/share`).
+///
+/// `data_dir()` e não `config_dir()`: as tarefas são dados, não configuração
+/// (ADR, ponto 4 e adenda 1). O `~/.config` costuma estar em dotfiles e fora
+/// de muitos backups — um `db.json` lá dentro iria para o próximo commit.
 pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf, StoreError> {
     if let Some(path) = explicit {
         return Ok(path.to_path_buf());
@@ -189,15 +193,7 @@ pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf, StoreError> {
     if let Some(from_env) = env::var_os(ENV_DB).filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(from_env));
     }
-    let base = env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(|home| Path::new(&home).join(".config"))
-        })
-        .ok_or(StoreError::NoConfigDir)?;
+    let base = dirs::data_dir().ok_or(StoreError::NoDataDir)?;
     Ok(base.join(APP_DIR).join(DB_FILE_NAME))
 }
 

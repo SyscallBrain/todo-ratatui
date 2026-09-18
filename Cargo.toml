@@ -20,6 +20,10 @@ crossterm = "0.29"
 # (`serde` é dependência normal). Só entrou agora, no T4, para não repetir as
 # dependências mortas do protótipo.
 csv = "1.4"
+# `dirs` 6 é a dep que o ponto 8 do ADR nomeia. Só se usa `data_dir()`
+# (`$XDG_DATA_HOME` → `~/.local/share`): as tarefas são **dados**, não
+# configuração, logo não vão para `~/.config` (que costuma estar em dotfiles).
+dirs = "6"
 # `default-features = false` aqui deixaria o crate sem `CrosstermBackend`.
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }

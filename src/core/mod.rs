@@ -15,5 +15,5 @@ pub use import_export::{
 };
 pub use model::{Priority, Todo, TodoError, TodoId};
 pub use ops::{ClearOutcome, OpsError, TRASH_LIMIT};
-pub use query::{Counts, Filter};
+pub use query::{Counts, Filter, SortKey};
 pub use store::{Db, ENV_DB, SCHEMA_VERSION, Store, StoreError, Trashed, resolve_path};

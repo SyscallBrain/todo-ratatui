@@ -670,8 +670,8 @@ impl LegacyTodo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Store;
     use crate::core::ops::TRASH_LIMIT;
-    use crate::core::{Filter, Store};
     use std::str::FromStr;
     use uuid::Uuid;
 
@@ -1048,7 +1048,7 @@ mod tests {
         let importado = &destino.todos()[0];
         assert_eq!(importado.id, id);
         assert_eq!(TodoId::from_str(id.as_str()).unwrap(), importado.id);
-        // E o filtro do lixo continua vazio depois de um import sem lixo.
-        assert!(destino.filtered(Filter::Trash).is_empty());
+        // E o lixo continua vazio depois de um import sem lixo.
+        assert!(destino.trash_entries().is_empty());
     }
 }
