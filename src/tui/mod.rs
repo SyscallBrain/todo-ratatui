@@ -5,16 +5,18 @@
 //!
 //! Estado actual: o estado da aplicação e as teclas já são reais — [`app::App`]
 //! guarda a seleção, o modo, a mensagem, a ordem, o filtro e a busca, e
-//! [`event::map_key`] traduz a tabela de teclas do @designer. O loop, o
-//! `init`/`restore` e o caminho da base de dados também já são reais; o desenho
-//! é um marcador que o T6 substitui (o layout depende do @designer) e é o T7 que
-//! liga o loop ao [`app::App`].
+//! [`event::map_key`] traduz a tabela de teclas do @designer. O desenho também
+//! já é real ([`ui::ui`], contra os goldens de `tests/frames/`) e o
+//! `init`/`restore` e o caminho da base de dados existem; o que falta é o T7
+//! ligar o loop ao [`app::App`] — o `run` abaixo ainda é o esqueleto do T1.
 
 pub mod app;
 pub mod event;
+pub mod ui;
 
 pub use app::{App, Status};
 pub use event::{Action, InputMode, map_key};
+pub use ui::ui;
 
 use std::io;
 

@@ -14,7 +14,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::core::{
-    Counts, Filter, OpsError, Priority, Store, Todo, TodoId, export_csv_to_path, import_from_path,
+    Counts, Filter, OpsError, Priority, SortKey, Store, Todo, TodoId, export_csv_to_path,
+    import_from_path,
 };
 
 use super::event::{Action, InputMode, map_key};
@@ -26,14 +27,14 @@ use super::event::{Action, InputMode, map_key};
 /// por gosto de confirmações.
 pub const ARM_WINDOW: Duration = Duration::from_secs(5);
 
-/// Nota de ordenação.
+/// Marca da mensagem de remoção, que é a que fica enquanto houver undo (§4).
 ///
-/// A **ordem** da lista não se decide aqui: é `core::query::SortKey`, que está a
-/// entrar pelo cartão **T3b** (`src/core/**`). Um `SortKey` definido no `tui`
-/// seria a mesma decisão em dois sítios, e é isso que o T3b evita. Enquanto ele
-/// não chegar, a vista mostra a ordem natural do `core::query` (de inserção) e
-/// `Action::CycleSort` é um no-op declarado.
-///
+/// É uma constante partilhada porque o T6 tem de reconhecê-la para reduzir a
+/// barra de ajuda a `u desfazer  ? ajuda` (frame `80x24-5-undo`): o `Status` é
+/// texto, e a barra do desfazer é o único sítio onde o desenho depende do
+/// *conteúdo* da mensagem. Sem a constante, o literal estaria em dois ficheiros.
+pub const UNDO_HINT: &str = "u para desfazer";
+
 /// Filtro seguinte do ciclo (`f`).
 ///
 /// `Filter::Trash` **não** entra: no todo-ratatui o lixo é uma vista própria
@@ -98,6 +99,16 @@ pub struct App {
     pub filter: Filter,
     /// Busca confirmada (`/` + `Enter`). `Esc` em repouso limpa-a.
     pub query: String,
+    /// Ordem de apresentação da lista (`s` cicla-a; a linha 2 do T6 mostra-a
+    /// em `ordem: …`). Arranca em [`SortKey::Priority`] porque é o que o golden
+    /// `80x24-1-normal` mostra — e **não** em [`SortKey::default`], que é
+    /// `CreatedAsc` (`mais antigas`).
+    ///
+    /// O que é decidido no `tui` é a divisão **pendentes / concluídas**: o
+    /// golden põe as concluídas no fim e o `SortKey` do `core` é puro (ordena
+    /// as `M` concluídas acima das `L` pendentes). A ordem **dentro** de cada
+    /// grupo continua a ser a do `core::query` — ver [`App::visible`].
+    pub sort: SortKey,
     buffer: Vec<char>,
     cursor: usize,
     /// Em `Editing`: o `Enter` grava a descrição em vez do título.
@@ -122,6 +133,7 @@ impl App {
             status: Status::Idle,
             filter: Filter::default(),
             query: String::new(),
+            sort: SortKey::Priority,
             buffer: Vec::new(),
             cursor: 0,
             editing_description: false,
@@ -162,39 +174,60 @@ impl App {
         self.armed_until.is_some_and(|fim| Instant::now() < fim)
     }
 
+    /// O contexto por baixo da sobreposição: com a ajuda aberta, é a vista de
+    /// onde ela foi aberta, não `Help`.
+    ///
+    /// É o que diz ao desenho que teclas listar dentro da caixa e qual é a
+    /// barra do rodapé (§6: «na vista do lixo mostra só as teclas dessa vista»).
+    #[must_use]
+    pub const fn context(&self) -> InputMode {
+        if matches!(self.mode, InputMode::Help) {
+            self.return_mode
+        } else {
+            self.mode
+        }
+    }
+
     #[must_use]
     pub fn counts(&self) -> Counts {
         self.store.counts()
     }
 
-    /// Que tarefas a vista mostra, já filtradas e buscadas — pela ordem natural
-    /// do `core::query` (de inserção), porque a ordenação é do T3b
-    /// (`core::query::SortKey`) e não se define no `tui`.
+    /// Que tarefas a vista mostra, já filtradas, buscadas e ordenadas.
     ///
     /// Este é o índice de `list_state`: o que aqui aparece na posição `i` é o
     /// que está selecionado quando `list_state.selected() == Some(i)`.
+    ///
+    /// A ordem vem do `core::query::view` ([`SortKey`]), com uma decisão de
+    /// apresentação por cima: com `Filter::All` as **concluídas ficam no fim**
+    /// (frame `80x24-1-normal`), cada grupo pela ordem escolhida. Faz-se com
+    /// dois `view` — um por grupo — e não com um comparador próprio: a ordem
+    /// dentro do grupo continua a ser a do `core`.
     #[must_use]
     pub fn visible(&self) -> Vec<&Todo> {
         // A vista do lixo é um modo (`L`), não um valor de `Filter`: as
         // entradas saem de `Store::trash_entries()`, da mais recente para a
-        // mais antiga.
-        let mut todos = if matches!(self.mode, InputMode::Trash) {
-            self.store
+        // mais antiga — e essa ordem não depende do `sort`.
+        if matches!(self.mode, InputMode::Trash) {
+            return self
+                .store
                 .trash_entries()
                 .into_iter()
                 .map(|entrada| &entrada.todo)
-                .collect()
-        } else {
-            self.store.filtered(self.filter)
-        };
-        if !self.query.is_empty() {
-            let alvo = self.query.to_lowercase();
-            todos.retain(|todo| {
-                todo.title.to_lowercase().contains(&alvo)
-                    || todo.description.to_lowercase().contains(&alvo)
-            });
+                .collect();
         }
-        todos
+        let ids = match self.filter {
+            // Pendentes primeiro, concluídas no fim: dois grupos, cada um pela
+            // ordem escolhida (o `view` é estável).
+            Filter::All => {
+                let mut ids = self.store.view(Filter::Active, self.sort, &self.query);
+                ids.extend(self.store.view(Filter::Done, self.sort, &self.query));
+                ids
+            }
+            // Estes dois filtros já são um grupo homogéneo: não há o que dividir.
+            filter => self.store.view(filter, self.sort, &self.query),
+        };
+        ids.iter().filter_map(|id| self.store.find(id)).collect()
     }
 
     /// Tarefa selecionada, na vista.
@@ -264,9 +297,11 @@ impl App {
             Action::ClearCompleted => self.clear_completed(),
             Action::EmptyTrash => self.confirm_or_empty_trash(),
             Action::CycleSort => {
-                // No-op declarado: a ordem é `core::query::SortKey`, do cartão
-                // T3b. Aqui não se inventa um `SortKey` do `tui` (ver a nota
-                // junto a `next_filter`).
+                // A ordem em si é `core::query::SortKey`; o que este cartão
+                // faz é ligar-lhe a tecla (até aqui era um no-op declarado) e
+                // redesenhar a vista pela nova ordem.
+                self.sort = self.sort.next();
+                self.clamp_selection();
             }
             Action::CycleFilter => {
                 self.filter = next_filter(self.filter);
@@ -368,7 +403,7 @@ impl App {
                 self.status = Status::message(format!("Reaberta «{titulo}»"));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err),
+            Err(err) => self.status = erro(err, self.store.path()),
         }
     }
 
@@ -391,7 +426,7 @@ impl App {
             .collect();
         for id in &ids {
             if let Err(err) = self.store.set_done(id, concluir) {
-                self.status = erro(err);
+                self.status = erro(err, self.store.path());
                 return;
             }
         }
@@ -422,7 +457,7 @@ impl App {
                 ));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err),
+            Err(err) => self.status = erro(err, self.store.path()),
         }
     }
 
@@ -438,7 +473,7 @@ impl App {
             .unwrap_or_default();
         match self.store.remove(&id) {
             Ok(0) => {
-                self.status = Status::message(format!("Removida «{titulo}»    u para desfazer"));
+                self.status = Status::message(format!("Removida «{titulo}»    {UNDO_HINT}"));
                 self.clamp_selection();
             }
             Ok(saidas) => {
@@ -448,7 +483,7 @@ impl App {
                 ));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err),
+            Err(err) => self.status = erro(err, self.store.path()),
         }
     }
 
@@ -474,7 +509,7 @@ impl App {
                 ));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err),
+            Err(err) => self.status = erro(err, self.store.path()),
         }
     }
 
@@ -501,7 +536,7 @@ impl App {
             Err(OpsError::NothingToRestore) => {
                 self.status = Status::message("Lixo vazio  ·  nada para repor");
             }
-            Err(err) => self.status = erro(err),
+            Err(err) => self.status = erro(err, self.store.path()),
         }
     }
 
@@ -672,7 +707,7 @@ impl App {
                         self.clamp_selection();
                         self.status = Status::message(format!("Adicionada «{}»", texto.trim()));
                     }
-                    Err(err) => self.status = erro(err),
+                    Err(err) => self.status = erro(err, self.store.path()),
                 }
             }
             InputMode::Editing => {
@@ -692,7 +727,7 @@ impl App {
                         self.close_line();
                         self.status = Status::message("Tarefa editada");
                     }
-                    Err(err) => self.status = erro(err),
+                    Err(err) => self.status = erro(err, self.store.path()),
                 }
             }
             InputMode::Search => {
@@ -745,11 +780,21 @@ impl App {
     }
 }
 
-/// Mensagem de erro a partir de um erro do `core`.
+/// Mensagem de erro a partir de um erro do `core` (e do caminho da base de
+/// dados, que é o que o utilizador procura).
 ///
-/// O texto do `StoreError` já diz o ficheiro; o prefixo «Erro:» é do desenho
-/// (§4: o vermelho nunca aparece sozinho).
-fn erro(err: OpsError) -> Status {
+/// O prefixo «Erro:» é do desenho (§4: o vermelho nunca aparece sozinho) e um
+/// erro de gravação diz sempre duas coisas: **onde** não se gravou e que a
+/// lista em memória não perdeu nada — é o que o golden `80x24-6-erro` fixa. O
+/// `Display` do erro continua a existir para quem o queira em `stderr`
+/// (arranque recusado, T7); na linha 22 o que cabe é o caminho e a garantia.
+fn erro(err: OpsError, caminho: &Path) -> Status {
+    if let OpsError::Persist(_) = &err {
+        return Status::error(format!(
+            "Erro: não gravou {} — lista intacta",
+            caminho.display()
+        ));
+    }
     Status::error(format!("Erro: {err}"))
 }
 

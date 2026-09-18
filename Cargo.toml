@@ -28,6 +28,11 @@ dirs = "6"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Largura de caracteres em colunas. Já vinha na árvore (é dependência do
+# `ratatui`), mas passou a ser usada directamente: o T6 mede colunas para
+# cortar títulos, centrar texto e asserir a coluna do cursor — com a mesma
+# regra do gerador dos goldens, e **não** com `chars().count()` (§8).
+unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [profile.release]

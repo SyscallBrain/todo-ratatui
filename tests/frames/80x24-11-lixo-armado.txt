@@ -1,0 +1,24 @@
+todo-ratatui                                                      lixo: 3 de 100
+────────────────────────────────────────────────────────────────────────────────
+vista: lixo · ordem: removidas primeiro                                 removida
+▶ [ ] M Pagar a subscrição do Spotify                                       hoje
+  [ ] L Arquivar os recibos de 2025                                       há 2 d
+  [x] M Responder ao email do senhorio                                    há 6 d
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+Esvaziar o lixo? 3 entradas, sem volta atrás  ·  c outra vez confirma           
+c confirmar  Esc cancela                                                        

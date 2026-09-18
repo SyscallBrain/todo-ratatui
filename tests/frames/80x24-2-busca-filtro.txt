@@ -1,0 +1,24 @@
+todo-ratatui                         1 de 9 tarefas · 7 pendentes · 2 concluídas
+────────────────────────────────────────────────────────────────────────────────
+filtro: pendentes · ordem: prioridade · busca "café" · lixo: 3 (L)        criada
+  [ ] L Comprar café em grão na Nota Roja                                   hoje
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+Busca activa: 1 de 7 pendentes    Esc limpa a busca e o filtro                  
+a nova  e editar  Espaço concluir  d remover  u desfazer  Esc limpar  ? ajuda   

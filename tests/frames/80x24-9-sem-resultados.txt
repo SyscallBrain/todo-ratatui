@@ -1,0 +1,24 @@
+todo-ratatui                         0 de 9 tarefas · 7 pendentes · 2 concluídas
+────────────────────────────────────────────────────────────────────────────────
+filtro: pendentes · ordem: prioridade · busca "netflix" · lixo: 3 (L)     criada
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+        Nenhuma tarefa corresponde a: filtro pendentes · busca "netflix"        
+                                                                                
+               Esc  limpa a busca e o filtro     a  cria uma nova               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+                                                                                
+Esc limpar  a nova  ? ajuda                                                     

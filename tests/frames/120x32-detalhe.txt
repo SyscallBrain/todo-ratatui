@@ -1,0 +1,32 @@
+todo-ratatui                                                                      9 tarefas · 7 pendentes · 2 concluídas
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+filtro: todas · ordem: prioridade · lixo: 3 (L)                                                                   criada
+  [ ] H Rever o PR do dashboard axum                                                                              há 2 d
+▶ [ ] H Refactor do módulo de persistência para escrita atómica (tmp+rename)                                        hoje
+  [ ] M Renovar o Cartão de Cidadão                                                                              há 12 d
+  [ ] M Backup do vault BrainStorm para o NAS                                                                     há 9 d
+  [ ] M Escrever post TugaTux sobre ratatui                                                                       há 5 d
+  [ ] L Comprar café em grão na Nota Roja                                                                           hoje
+  [ ] L Testar o ratatui 0.30 com TestBackend                                                                     há 3 d
+  [x] M Configurar tmux no portátil                                                                             ✓ há 3 d
+  [x] L Instalar a FiraCode Nerd Font                                                                          ✓ há 20 d
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+─ selecionada ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Título      Refactor do módulo de persistência para escrita atómica (tmp+rename)                                      
+  Descrição   ver ADR — tmp ao lado do ficheiro, nunca em /tmp                                                          
+  Prioridade  Alta (H)    ·    criada 2026-09-18 14:03    ·    concluída —                                              
+  Prazo       —    ·    id 2                                                                                            
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+A descrição do selecionado aparece no painel quando houver altura; a partir de 96×28                                    
+a nova  e editar  Espaço concluir  d remover  u desfazer  / buscar  ? ajuda                                             

@@ -1,0 +1,24 @@
+todo-ratatui                              9 tarefas · 7 pendentes · 2 concluídas
+────────────────────────────────────────────────────────────────────────────────
+filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
+  [ ] H Rever o PR do dashboard axum                                      há 2 d
+▶ [ ] H Re╭── ajuda ─────────────────────────────────────────────────╮      hoje
+  [ ] M Re│                                                          │   há 12 d
+  [ ] M Ba│ Navegação               Tarefas                          │    há 9 d
+  [ ] M Es│ j / ↓  seguinte         a  nova tarefa                   │    há 5 d
+  [ ] L Co│ k / ↑  anterior         e  editar título                 │      hoje
+  [ ] L Te│ g / G  topo / fim       Espaço  concluir                 │    há 3 d
+  [x] M Co│ 1 2 3  prioridade       d  remover                       │  ✓ há 3 d
+  [x] L In│ s  ordenar              u  desfazer                      │ ✓ há 20 d
+          │ f  filtrar              t  alternar todas                │          
+          │ /  buscar               c  limpar concluídas             │          
+          │ Esc  limpar busca       L  ver o lixo                    │          
+          │                         i  importar · x  exportar        │          
+          │                                                          │          
+          │ Esc  fechar a ajuda     q  sair                          │          
+          ╰──────────────────────────────────────────────────────────╯          
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+Descrição: ver ADR — tmp ao lado do ficheiro, nunca em /tmp                     
+? ou Esc fecha a ajuda                                                          
