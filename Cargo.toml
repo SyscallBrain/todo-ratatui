@@ -1,0 +1,27 @@
+[package]
+name = "todo_ratatui"
+version = "0.1.0"
+edition = "2024"
+# MSRV = máximo dos MSRV do conjunto de deps (ratatui 0.30.2, crossterm 0.29,
+# chrono 0.4, serde 1), medido com `cargo tree` pelo researcher. Não é o 1.85
+# do `edition 2024`.
+rust-version = "1.88"
+description = "TODO list em TUI (ratatui)"
+publish = false
+
+[dependencies]
+# `chrono` com as features default: `clock`/`now`/`std` são precisos para
+# `Local::now()`; `serde` é dep opcional, ligada explicitamente.
+chrono = { version = "0.4", features = ["serde"] }
+# Sem a feature `event-stream` (arrasta `futures-core` e não é usada: só
+# `event::read`/`poll`). As features default ficam.
+crossterm = "0.29"
+# `default-features = false` aqui deixaria o crate sem `CrosstermBackend`.
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+lto = "thin"
+strip = true
