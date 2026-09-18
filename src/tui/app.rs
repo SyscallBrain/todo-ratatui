@@ -2,7 +2,8 @@
 //!
 //! O [`App`] é a única peça que liga as teclas aos dados: [`map_key`] diz *que*
 //! acção a tecla vale no modo activo, e `App::handle` é o único sítio onde essa
-//! acção toca no `core`. Nada aqui desenha — o render é do T6 e o loop é do T7.
+//! acção toca no `core`. Nada aqui desenha (o render é do T6) nem lê eventos: o
+//! dono do `App` é o loop de `tui::run`.
 //!
 //! Tudo é testável sem TTY: o [`Store`] dos testes vive num directório
 //! temporário e as teclas são `KeyEvent::new(…)`.
@@ -384,6 +385,19 @@ impl App {
 
     // -------------------------------------------------------------- acções
 
+    /// Erro de uma operação que mexe na lista: escreve a faixa da linha 22 e
+    /// volta a pôr a seleção dentro dos limites.
+    ///
+    /// O `clamp` não é decoração. Quando a gravação falha, a mutação já foi
+    /// aplicada **em memória** (é o «estado sujo mantido para nova tentativa»
+    /// da adenda 2 do ADR): uma remoção encurta a lista na mesma e, sem isto, a
+    /// seleção ficava pendurada fora da vista — a partir daí a TUI respondia
+    /// «não há nenhuma tarefa selecionada» a tudo, mesmo com linhas no ecrã.
+    fn falha(&mut self, err: OpsError) {
+        self.status = erro(err, self.store.path());
+        self.clamp_selection();
+    }
+
     fn toggle_selected(&mut self) {
         let Some(id) = self.selected_id() else {
             self.status = Status::error("Erro: não há nenhuma tarefa selecionada");
@@ -403,7 +417,7 @@ impl App {
                 self.status = Status::message(format!("Reaberta «{titulo}»"));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err, self.store.path()),
+            Err(err) => self.falha(err),
         }
     }
 
@@ -426,7 +440,7 @@ impl App {
             .collect();
         for id in &ids {
             if let Err(err) = self.store.set_done(id, concluir) {
-                self.status = erro(err, self.store.path());
+                self.falha(err);
                 return;
             }
         }
@@ -457,7 +471,7 @@ impl App {
                 ));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err, self.store.path()),
+            Err(err) => self.falha(err),
         }
     }
 
@@ -483,7 +497,7 @@ impl App {
                 ));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err, self.store.path()),
+            Err(err) => self.falha(err),
         }
     }
 
@@ -509,7 +523,7 @@ impl App {
                 ));
                 self.clamp_selection();
             }
-            Err(err) => self.status = erro(err, self.store.path()),
+            Err(err) => self.falha(err),
         }
     }
 
@@ -536,50 +550,35 @@ impl App {
             Err(OpsError::NothingToRestore) => {
                 self.status = Status::message("Lixo vazio  ·  nada para repor");
             }
-            Err(err) => self.status = erro(err, self.store.path()),
+            Err(err) => self.falha(err),
         }
     }
 
     /// Repõe a entrada **selecionada** do lixo (o `Enter` da vista do lixo).
     ///
-    /// **Lacuna declarada**: o `core::ops` só tem `restore_last_batch()`, não
-    /// tem `restore(id)`, e o cartão do T5 proíbe mexer no `core`. Isto é,
-    /// portanto, uma das duas únicas operações de dados com lógica própria na
-    /// TUI (a outra é `empty_trash`) — e usa só API pública (`db_mut`, `save`).
-    /// Substitui-la por um `ops::restore(id)` é trabalho declarado, não
-    /// esquecido.
+    /// A reposição em si é `core::ops::Store::restore(id)` — o `index` original
+    /// e a posição de destino são regra do `core`, testada sem terminal (a
+    /// lacuna que o T5 declarou aqui foi fechada pelo T3b).
     fn restore_selected(&mut self) {
-        let alvo = {
-            let vista = self.store.trash_entries();
-            self.list_state
-                .selected()
-                .and_then(|i| vista.get(i).map(|entrada| entrada.todo.id.clone()))
-        };
-        let Some(alvo) = alvo else {
+        let alvo = self
+            .list_state
+            .selected()
+            .and_then(|i| self.store.trash_entries().get(i).copied());
+        let Some(entrada) = alvo else {
             self.status = Status::message("Lixo vazio  ·  nada para repor");
             return;
         };
+        let id = entrada.todo.id.clone();
+        let titulo = entrada.todo.title.clone();
 
-        let (titulo, posicao) = {
-            let db = self.store.db_mut();
-            let Some(indice) = db.trash.iter().position(|e| e.todo.id == alvo) else {
-                return;
-            };
-            let entrada = db.trash.remove(indice);
-            let titulo = entrada.todo.title.clone();
-            let posicao = entrada.index.min(db.todos.len());
-            db.todos.insert(posicao, entrada.todo);
-            (titulo, posicao)
-        };
-
-        match self.store.save() {
-            Ok(()) => {
+        match self.store.restore(&id) {
+            Ok(posicao) => {
                 self.status = Status::message(format!(
                     "Restaurada «{titulo}» para a posição {} da lista",
                     posicao + 1
                 ));
             }
-            Err(err) => self.status = Status::error(format!("Erro: {err}")),
+            Err(err) => self.falha(err),
         }
         self.clamp_selection();
     }
@@ -593,7 +592,7 @@ impl App {
             return;
         }
         if self.armed() {
-            self.empty_trash(total);
+            self.empty_trash();
         } else {
             self.armed_until = Some(Instant::now() + ARM_WINDOW);
             self.status = Status::message(format!(
@@ -604,16 +603,16 @@ impl App {
 
     /// Esvazia o lixo (a segunda pressão do `c`).
     ///
-    /// Mesma lacuna declarada do `restore_selected`: o `core::ops` não tem
-    /// `empty_trash()`. `trash_dropped` fica como está — é um contador
-    /// acumulado do que o limite deitou fora, não do que está no lixo.
-    fn empty_trash(&mut self, entradas: usize) {
-        self.store.db_mut().trash.clear();
-        match self.store.save() {
-            Ok(()) => {
+    /// O trabalho é `core::ops::Store::empty_trash()`, que já grava e devolve
+    /// quantas entradas saíram — a TUI só compõe a mensagem. `trash_dropped`
+    /// fica como está: é um contador acumulado do que o limite deitou fora,
+    /// não do que está no lixo.
+    fn empty_trash(&mut self) {
+        match self.store.empty_trash() {
+            Ok(entradas) => {
                 self.status = Status::message(format!("Lixo esvaziado ({entradas} entradas)"));
             }
-            Err(err) => self.status = Status::error(format!("Erro: {err}")),
+            Err(err) => self.falha(err),
         }
         self.armed_until = None;
         self.clamp_selection();
@@ -707,7 +706,7 @@ impl App {
                         self.clamp_selection();
                         self.status = Status::message(format!("Adicionada «{}»", texto.trim()));
                     }
-                    Err(err) => self.status = erro(err, self.store.path()),
+                    Err(err) => self.falha(err),
                 }
             }
             InputMode::Editing => {
@@ -727,7 +726,7 @@ impl App {
                         self.close_line();
                         self.status = Status::message("Tarefa editada");
                     }
-                    Err(err) => self.status = erro(err, self.store.path()),
+                    Err(err) => self.falha(err),
                 }
             }
             InputMode::Search => {
@@ -1169,5 +1168,59 @@ mod tests {
         }
         assert_eq!(na_db(&app), ["a"]);
         assert_eq!(app.store().trash_len(), 0);
+    }
+
+    /// A gravação falhada não pode deixar a TUI num estado em que já não
+    /// responde: a mutação fica em memória, a faixa diz o que se passou e o
+    /// ficheiro não é tocado.
+    #[test]
+    fn gravacao_falhada_mostra_a_faixa_e_nao_deixa_a_selecao_pendurada() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (path, mut app) = app("gravacao-falhada", &["a", "b", "c"]);
+        let dir = path
+            .parent()
+            .expect("directório da base de dados")
+            .to_path_buf();
+        let antes = fs::read(&path).expect("ler o ficheiro");
+
+        // O `save` cria o `db.json.tmp` ao lado do `db.json`: sem escrita no
+        // directório, a gravação falha antes de tocar no ficheiro bom.
+        let mut perm = fs::metadata(&dir).expect("metadata").permissions();
+        perm.set_mode(0o500);
+        fs::set_permissions(&dir, perm.clone()).expect("tirar a escrita ao directório");
+
+        tecla(&mut app, 'j');
+        tecla(&mut app, 'j');
+        tecla(&mut app, 'd');
+
+        perm.set_mode(0o700);
+        fs::set_permissions(&dir, perm).expect("devolver a escrita ao directório");
+
+        let texto = app.status.text().expect("há mensagem").to_owned();
+        assert!(app.status.is_error(), "devia ser erro: {texto}");
+        assert!(
+            texto.contains("não gravou") && texto.contains("lista intacta"),
+            "a faixa diz onde não se gravou e que a lista está intacta: {texto}"
+        );
+        assert_eq!(
+            na_vista(&app),
+            ["a", "b"],
+            "a mutação fica em memória (é o estado sujo a repetir)"
+        );
+        assert_eq!(
+            app.list_state.selected(),
+            Some(1),
+            "a seleção volta para dentro dos limites"
+        );
+        assert_eq!(
+            fs::read(&path).expect("reler o ficheiro"),
+            antes,
+            "o ficheiro em disco não foi tocado"
+        );
+
+        // E a TUI continua a responder à linha que está selecionada.
+        tecla(&mut app, '1');
+        assert_eq!(app.store().todos()[1].priority, Priority::High);
     }
 }

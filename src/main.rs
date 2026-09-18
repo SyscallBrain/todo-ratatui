@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use todo_ratatui::core::{Store, resolve_path};
+use todo_ratatui::core::{Store, backup_path_for, resolve_path};
 use todo_ratatui::tui;
 
 const USAGE: &str = "\
@@ -64,10 +64,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let store = match Store::open(path) {
+    let store = match Store::open(&path) {
         Ok(store) => store,
         Err(err) => {
+            // Adenda 2 do ADR: falhar ao **abrir** recusa o arranque — nunca
+            // uma TUI sobre uma lista vazia em memória, que à primeira
+            // gravação reescreveria o ficheiro que o utilizador ainda podia
+            // recuperar. O `Store::open` nunca reescreve o original, e a saída
+            // do utilizador é o `.bak`, logo a mensagem nomeia os dois.
             eprintln!("erro: {err}");
+            eprintln!(
+                "a base de dados não foi alterada; a geração anterior está em «{}»",
+                backup_path_for(&path).display()
+            );
             return ExitCode::FAILURE;
         }
     };

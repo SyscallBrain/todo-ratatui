@@ -197,6 +197,18 @@ pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf, StoreError> {
     Ok(base.join(APP_DIR).join(DB_FILE_NAME))
 }
 
+/// Caminho do backup (`db.json.bak`) correspondente a um caminho de base de
+/// dados.
+///
+/// Existe como função livre porque há quem precise de o nomear **sem** ter um
+/// [`Store`] aberto: é o caso da mensagem de recusa de arranque em `main.rs`,
+/// que corre precisamente quando a abertura falhou. A convenção do nome fica
+/// num só sítio — [`Store::backup_path`] usa esta função.
+#[must_use]
+pub fn backup_path_for(path: &Path) -> PathBuf {
+    path.with_file_name(format!("{DB_FILE_NAME}.bak"))
+}
+
 /// Base de dados aberta em memória e ligada a um ficheiro.
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -281,7 +293,7 @@ impl Store {
     /// Caminho do ficheiro de backup (geração anterior).
     #[must_use]
     pub fn backup_path(&self) -> PathBuf {
-        self.path.with_file_name(format!("{DB_FILE_NAME}.bak"))
+        backup_path_for(&self.path)
     }
 
     /// Caminho do ficheiro onde fica o estado anterior a um `restore`.

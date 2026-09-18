@@ -3,12 +3,10 @@
 //! Esta camada pode (e deve) depender de [`crate::core`]; o contrário não é
 //! permitido.
 //!
-//! Estado actual: o estado da aplicação e as teclas já são reais — [`app::App`]
-//! guarda a seleção, o modo, a mensagem, a ordem, o filtro e a busca, e
-//! [`event::map_key`] traduz a tabela de teclas do @designer. O desenho também
-//! já é real ([`ui::ui`], contra os goldens de `tests/frames/`) e o
-//! `init`/`restore` e o caminho da base de dados existem; o que falta é o T7
-//! ligar o loop ao [`app::App`] — o `run` abaixo ainda é o esqueleto do T1.
+//! O [`run`] é o único sítio que liga as três peças: o terminal (aqui), o
+//! estado e as teclas ([`app::App`] + [`event::map_key`]) e o desenho
+//! ([`ui::ui`]). O `App` é **possuído pelo loop** — a camada de cima
+//! (`main.rs`) entrega um [`Store`] aberto e não volta a tocar nos dados.
 
 pub mod app;
 pub mod event;
@@ -20,10 +18,7 @@ pub use ui::ui;
 
 use std::io;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::Frame;
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
+use crossterm::event::Event;
 
 use crate::core::Store;
 
@@ -34,42 +29,51 @@ use crate::core::Store;
 /// `init`). Usamos `try_init` e não `init` para que a falta de TTY (por
 /// exemplo, arrancar o binário numa pipe) saia como erro com mensagem, em vez
 /// de um panic com stack trace.
+///
+/// Recebe o [`Store`] já aberto: falhar a **abrir** recusa o arranque em
+/// `main.rs` (adenda 2 do ADR) e nunca chega aqui com uma lista vazia em
+/// memória a caminho de sobrescrever o ficheiro.
 pub fn run(store: Store) -> io::Result<()> {
-    let mut terminal = ratatui::try_init()?;
-    let result = event_loop(&mut terminal, &store);
+    // A falha de arranque é distinguida da falha a meio do loop: quem lê a
+    // mensagem (uma `pipe`, um cron, um terminal sem TTY) precisa de saber que
+    // o problema é não haver terminal interactivo — e não que a TUI tenha
+    // rebentado a meio. O `try_init` instala o panic hook, liga o raw mode e só
+    // depois entra no ecrã alternativo: aqui falhou no raw mode, logo não há
+    // nada para restaurar.
+    let mut terminal = ratatui::try_init().map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("não há terminal interactivo para a TUI: {err}"),
+        )
+    })?;
+    let result = event_loop(&mut terminal, store);
     ratatui::restore();
     result
 }
 
-fn event_loop(terminal: &mut ratatui::DefaultTerminal, store: &Store) -> io::Result<()> {
+/// O loop de eventos: desenhar → ler uma tecla → aplicar → sair quando o `App`
+/// o pedir.
+///
+/// Só as teclas mexem em nada: um `Resize`/`FocusGained` cai no `if let` sem
+/// corpo e o ciclo volta a desenhar (é o que faz o ecrã acompanhar um
+/// redimensionamento do terminal).
+///
+/// **Não há gravação aqui.** O [`App::handle`] já grava depois de cada
+/// mutação — um `dirty`/`save` neste loop seria um segundo caminho de
+/// gravação para o mesmo dado.
+fn event_loop(terminal: &mut ratatui::DefaultTerminal, store: Store) -> io::Result<()> {
+    let mut app = App::new(store);
     loop {
-        terminal.draw(|frame| draw(frame, store))?;
-        if let Event::Key(key) = crossterm::event::read()?
-            && handle_key(key)
-        {
+        terminal.draw(|frame| ui::ui(frame, &app))?;
+
+        if let Event::Key(key) = crossterm::event::read()? {
+            // `Release`/`Repeat` não são filtrados aqui: `map_key` já os
+            // traduz em `Action::Ignore`.
+            app.on_key(key);
+        }
+
+        if app.should_quit() {
             return Ok(());
         }
     }
-}
-
-/// Devolve `true` quando é para sair.
-fn handle_key(key: KeyEvent) -> bool {
-    if key.kind != KeyEventKind::Press {
-        return false;
-    }
-    matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-}
-
-fn draw(frame: &mut Frame, store: &Store) {
-    let todo_count = store.todos().len();
-    let lines = vec![
-        Line::from("todo-ratatui — esqueleto (T1)"),
-        Line::from(""),
-        Line::from(format!("base de dados: {}", store.path().display())),
-        Line::from(format!("tarefas: {todo_count}")),
-        Line::from(""),
-        Line::from("q / Esc — sair"),
-    ];
-    let block = Block::bordered().title(" todo-ratatui ");
-    frame.render_widget(Paragraph::new(lines).block(block), frame.area());
 }
