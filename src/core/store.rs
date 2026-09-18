@@ -44,6 +44,9 @@ pub struct Trashed {
     /// a devolver à posição original.
     pub index: usize,
     pub deleted_at: DateTime<Local>,
+    /// Remoção a que pertence: um «limpar concluídas» cria um lote com várias
+    /// entradas, e o `u` desfaz o lote inteiro de uma vez.
+    pub batch: u64,
 }
 
 /// Conteúdo completo da base de dados.
@@ -54,6 +57,12 @@ pub struct Db {
     pub todos: Vec<Todo>,
     #[serde(default)]
     pub trash: Vec<Trashed>,
+    /// Quantas entradas saíram do lixo por este ter atingido o limite.
+    ///
+    /// Persistido de propósito: o aviso de que nada sai em silêncio não pode
+    /// depender de a aplicação ainda estar de pé quando transbordou.
+    #[serde(default)]
+    pub trash_dropped: u64,
 }
 
 impl Db {
@@ -63,6 +72,7 @@ impl Db {
             schema: SCHEMA_VERSION,
             todos: Vec::new(),
             trash: Vec::new(),
+            trash_dropped: 0,
         }
     }
 }
@@ -609,6 +619,7 @@ mod tests {
                     todo: todo.clone(),
                     index: 3,
                     deleted_at: Local::now(),
+                    batch: 7,
                 }],
                 ..Db::empty()
             })

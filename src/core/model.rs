@@ -79,6 +79,18 @@ impl Priority {
         }
     }
 
+    /// Nome como aparece no JSON e no CSV. Tem de coincidir com o
+    /// `serde(rename_all = "lowercase")` do `enum` — há um teste que compara
+    /// os dois, para o formato em disco não divergir da API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
     /// Aceita `"High"`/`"high"`/`"alta"` (o `rtodo` antigo gravava `"High"`).
     #[must_use]
     pub fn from_legacy(text: &str) -> Option<Self> {
@@ -200,6 +212,17 @@ impl Todo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_str_coincide_com_o_serde() {
+        for prioridade in Priority::ALL {
+            assert_eq!(
+                serde_json::to_value(prioridade).unwrap(),
+                serde_json::json!(prioridade.as_str()),
+                "o nome em disco tem de ser o mesmo do `as_str()`"
+            );
+        }
+    }
 
     #[test]
     fn try_new_rejeita_titulo_vazio() {

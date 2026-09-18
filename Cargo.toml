@@ -16,6 +16,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # Sem a feature `event-stream` (arrasta `futures-core` e não é usada: só
 # `event::read`/`poll`). As features default ficam.
 crossterm = "0.29"
+# `csv` 1.4: sem secção `[features]` no crate, logo não há nada a ligar
+# (`serde` é dependência normal). Só entrou agora, no T4, para não repetir as
+# dependências mortas do protótipo.
+csv = "1.4"
 # `default-features = false` aqui deixaria o crate sem `CrosstermBackend`.
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
