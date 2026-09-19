@@ -1,19 +1,19 @@
 todo-ratatui                              9 tarefas · 7 pendentes · 2 concluídas
 ────────────────────────────────────────────────────────────────────────────────
 filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
-  [ ] H Rever o PR do dashboard axum                                      há 2 d
+  [ ] H Rever o PR do dashboard axum                 Trabalho             há 2 d
 ▶ [ ] H Re╭── ajuda ─────────────────────────────────────────────────╮      hoje
   [ ] M Re│                                                          │   há 12 d
   [ ] M Ba│ Navegação               Tarefas                          │    há 9 d
-  [ ] M Es│ j / ↓  seguinte         a  nova tarefa                   │    há 5 d
-  [ ] L Co│ k / ↑  anterior         e  editar título                 │      hoje
-  [ ] L Te│ g / G  topo / fim       Espaço  concluir                 │    há 3 d
-  [x] M Co│ 1 2 3  prioridade       d  remover                       │  ✓ há 3 d
-  [x] L In│ s  ordenar              u  desfazer                      │ ✓ há 20 d
-          │ f  filtrar              t  alternar todas                │          
+  [ ] M Es│ j / k  ↑ ↓  navegar     a  nova tarefa                   │    há 5 d
+  [ ] L Co│ g / G  topo / fim       e  editar título                 │      hoje
+  [ ] L Te│ 1 2 3  prioridade       Espaço  concluir                 │    há 3 d
+  [x] M Co│ s  ordenar              d  remover                       │  ✓ há 3 d
+  [x] L In│ f  filtrar estado       u  desfazer                      │ ✓ há 20 d
+          │ F  filtrar categoria    t  alternar todas                │          
           │ /  buscar               c  limpar concluídas             │          
           │ Esc  limpar busca       L  ver o lixo                    │          
-          │                         T  tema                          │          
+          │                         T  tema · C  categorias          │          
           │                         i  importar · x  exportar        │          
           │ Esc  fechar a ajuda     q  sair                          │          
           ╰──────────────────────────────────────────────────────────╯          

@@ -1,0 +1,24 @@
+todo-ratatui                              9 tarefas · 7 pendentes · 2 concluídas
+────────────────────────────────────────────────────────────────────────────────
+filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
+  [ ] H Rever o PR do dashboard axum                 —                    há 2 d
+▶ [ ] H Re╭── categorias ────────────────────────────────────────────╮      hoje
+  [ ] M Re│                                                          │   há 12 d
+  [ ] M Ba│ Categorias                                               │    há 9 d
+  [ ] M Es│ ▶ sem categoria                                      (9) │    há 5 d
+  [ ] L Co│                                                          │      hoje
+  [ ] L Te│                                                          │    há 3 d
+  [x] M Co│                                                          │  ✓ há 3 d
+  [x] L In│                                                          │ ✓ há 20 d
+          │                                                          │          
+          │                                                          │          
+          │                                                          │          
+          │                                                          │          
+          │                                                          │          
+          │ Sem categorias — a cria a primeira                       │          
+          ╰─ a nova · Enter tirar a atribuição · Esc fechar ─────────╯          
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+Descrição: ver ADR — tmp ao lado do ficheiro, nunca em /tmp                     
+Esc fecha sem atribuir                                                          

@@ -1,15 +1,15 @@
-todo-ratatui                              9 tarefas · 7 pendentes · 2 concluídas
+todo-ratatui                         2 de 9 tarefas · 7 pendentes · 2 concluídas
 ────────────────────────────────────────────────────────────────────────────────
-filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
-  [ ] H Rever o PR do dashboard axum                 Trabalho             há 2 d
-▶ [ ] H Refactor do módulo de persistência para esc… Trabalho               hoje
-  [ ] M Renovar o Cartão de Cidadão                  Casa                há 12 d
-  [ ] M Backup do vault BrainStorm para o NAS        Backups do se…       há 9 d
-  [ ] M Escrever post TugaTux sobre ratatui          TugaTux / blog       há 5 d
-  [ ] L Comprar café em grão na Nota Roja            Café e compras         hoje
-  [ ] L Testar o ratatui 0.30 com TestBackend        Formação Rust        há 3 d
-  [x] M Configurar tmux no portátil                  —                  ✓ há 3 d
-  [x] L Instalar a FiraCode Nerd Font                —                 ✓ há 20 d
+filtro: todas · ordem: prioridade · categoria: Trabalho · lixo: 3 (L)     criada
+▶ [ ] H Rever o PR do dashboard axum                 Trabalho             há 2 d
+  [ ] H Refactor do módulo de persistência para esc… Trabalho               hoje
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 

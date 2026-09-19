@@ -1,0 +1,24 @@
+todo-ratatui                              0 tarefas · 0 pendentes · 0 concluídas
+────────────────────────────────────────────────────────────────────────────────
+filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
+                                                                                
+          ╭── categorias ────────────────────────────────────────────╮          
+          │                                                          │          
+          │ Categorias                                    1–10 de 13 │          
+          │ ▶ sem categoria                                      (0) │          
+          │   Trabalho                                           (0) │          
+          │   Casa                                               (0) │          
+          │   Café e compras                                     (0) │          
+          │   Saúde                                              (0) │          
+          │   TugaTux / blog                                     (0) │          
+          │   Finanças                                           (0) │          
+          │   Formação Rust                                      (0) │          
+          │   Backups do servidor doméstico e do NAS com verif…  (0) │          
+          │   Leituras                                           (0) │          
+          │ Sem tarefas — não há a quem atribuir                     │          
+          ╰─ a nova · Enter tirar a atribuição · Esc fechar ─────────╯          
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+                                                                                
+Esc fecha sem atribuir                                                          

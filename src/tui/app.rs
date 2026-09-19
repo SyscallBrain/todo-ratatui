@@ -15,12 +15,17 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::core::{
-    Config, Counts, Filter, OpsError, Priority, SortKey, Store, Todo, TodoId, export_csv_to_path,
-    import_from_path,
+    Category, CategoryFilter, CategoryId, Config, Counts, Filter, OpsError, Priority, SortKey,
+    Store, Todo, TodoId, export_csv_to_path, import_from_path,
 };
 
 use super::event::{Action, InputMode, map_key};
 use super::theme::{CATALOGO, ModoCor, Theme};
+// O corte em colunas é o mesmo do desenho (`ui::cortar`): um só sítio mede
+// `café` como quatro colunas, e a mensagem da eliminação corta o **nome**, nunca
+// a contagem (§C.4). A composição do relatório do import também é de lá: as
+// partes são do `core`, as colunas são da TUI (§C.4.1).
+use super::ui::{compor_relatorio, cortar};
 
 /// Janela da guarda do `c` no lixo: a segunda pressão tem de vir dentro deste
 /// tempo, e qualquer outra acção desarma (§5, mudança 7).
@@ -35,6 +40,15 @@ pub const ARM_WINDOW: Duration = Duration::from_secs(5);
 /// Só as mensagens de acção a respeitam: o undo disponível e o aviso de
 /// transbordo nascem `sticky` e ficam até outra acção os substituir.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(3);
+
+/// Quantas colunas do nome de uma categoria cabem numa mensagem de acção da
+/// linha 22 (§C.4, medido: 79 colunas úteis).
+///
+/// A regra da §C.4 é cortar **o nome** e nunca a contagem — é ela que diz o
+/// preço da operação. Com 30 colunas, `Eliminada «Backups do servidor
+/// doméstico…» · 3 tarefas ficaram sem categoria` mede 76/79, que é exactamente
+/// o caso que o `@designer` mediu.
+pub const NOME_NA_MENSAGEM: usize = 30;
 
 /// Marca da mensagem de remoção, que é a que fica enquanto houver undo (§4).
 ///
@@ -74,6 +88,60 @@ fn posicao_no_catalogo(tema: &Theme) -> usize {
         .unwrap_or(0)
 }
 
+/// O que a guarda de duas pressões tem armado (ADR §Decisão 6).
+///
+/// Era um `Option<Instant>` só, e um sinalizador com dois significados é como
+/// se esvazia o lixo ao eliminar uma categoria: as duas operações sem undo por
+/// trás (`c` no lixo, `d` na caixa) têm de saber **qual** das duas está armada
+/// para que a outra não confirme o que o utilizador não pediu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Guarda {
+    /// `c` no lixo — esvaziar tudo (a primeira operação sem undo da v1).
+    EsvaziarLixo,
+    /// `d` na caixa — eliminar esta categoria e tirar a atribuição das tarefas
+    /// dela (a segunda: recriar a categoria é uma linha, a atribuição não volta).
+    EliminarCategoria(CategoryId),
+}
+
+/// Nome cortado para caber numa mensagem de acção da linha 22 (§C.4).
+///
+/// `pub(crate)` porque o desenho também o usa: a linha de estado da caixa diz o
+/// preço da eliminação (`Eliminar «…»? 3 tarefas ficam sem categoria`) e o nome
+/// corta-se da mesma maneira nos dois sítios — a regra do `cortar` é uma só.
+pub(crate) fn nome_na_mensagem(nome: &str) -> String {
+    cortar(nome.trim(), NOME_NA_MENSAGEM)
+}
+
+/// `Eliminada «X» · N tarefas ficaram sem categoria` (§C.4) — o número é o preço
+/// de a eliminação não ser reversível, e por isso nunca é ele que se corta.
+fn mensagem_eliminada(nome: &str, afectadas: usize) -> String {
+    let nome = nome_na_mensagem(nome);
+    if afectadas == 1 {
+        format!("Eliminada «{nome}» · 1 tarefa ficou sem categoria")
+    } else {
+        format!("Eliminada «{nome}» · {afectadas} tarefas ficaram sem categoria")
+    }
+}
+
+/// O aviso da abertura quando a leitura normalizou referências de categoria
+/// (§C.5.1, ADR Adenda 1): `Aviso: N tarefa(s) sem categoria — a categoria não
+/// existe  ·  C categorias`.
+///
+/// Nasce **sozinho** — é a única mensagem que a aplicação cria sem uma tecla a
+/// pedi-la — porque é a única alteração de dados do utilizador que acontecia sem
+/// ele saber: um `category_id` que não resolve fica `None` na leitura, a tarefa
+/// continua visível e a primeira gravação consolidava a correcção em silêncio.
+///
+/// A concordância é a das outras mensagens que contam (`1 tarefa`, `2 tarefas`)
+/// e poupa uma coluna no caso mais frequente; medido a 74 das 79 colunas da
+/// linha 22 no pior caso realista. A dica é o `C`: a tecla viva que resolve o
+/// caso (abre a caixa, onde a tarefa se volta a atribuir) e a única deste estado
+/// que não está na barra de ajuda em repouso.
+fn aviso_de_referencias(n: u64) -> String {
+    let palavra = if n == 1 { "tarefa" } else { "tarefas" };
+    format!("Aviso: {n} {palavra} sem categoria — a categoria não existe  ·  C categorias")
+}
+
 /// O que a linha 22 mostra (§4). A precedência — erro > mensagem > descrição do
 /// selecionado > vazio — é do T6; aqui só se guarda o que há para mostrar, e o
 /// prazo de cada mensagem.
@@ -89,9 +157,10 @@ pub enum Status {
         /// o instante injectado.
         desde: Instant,
     },
-    /// Mensagem que **não** expira: o undo disponível e o aviso de transbordo
-    /// (§4). O sinalizador é explícito — quem cria a mensagem é que sabe o
-    /// prazo — e não um `contains(UNDO_HINT)` sobre o texto.
+    /// Mensagem que **não** expira: o undo disponível, o aviso de transbordo e o
+    /// aviso de referências recuperadas na abertura (§4, §C.5.1). O sinalizador
+    /// é explícito — quem cria a mensagem é que sabe o prazo — e não um
+    /// `contains(UNDO_HINT)` sobre o texto.
     Sticky(String),
     /// Erro: vermelho e com o prefixo «Erro:» no T6. Nunca expira sozinho.
     Error(String),
@@ -188,11 +257,26 @@ pub struct App {
     cursor: usize,
     /// Em `Editing`: o `Enter` grava a descrição em vez do título.
     editing_description: bool,
-    /// Modo para onde voltar quando a sobreposição fechar — a ajuda e a caixa de
-    /// temas abrem-se por cima da vista e guardam aqui de onde vieram.
+    /// Cursor da caixa de categorias (`C`): índice na lista de entradas, onde
+    /// **0 é sempre `sem categoria`** (o `None`, não uma categoria) e as
+    /// categorias seguem pela ordem de inserção (§C.1).
+    ///
+    /// `pub` como o `theme_cursor`: o desenho lê-o para pôr o `▶`.
+    pub categoria_cursor: usize,
+    /// Filtro por categoria da lista (`F`) — eixo próprio, ao lado do
+    /// [`App::filter`] de estado. Cada um restringe o seu (ADR §8): é o que
+    /// permite «pendentes de Trabalho».
+    pub category_filter: CategoryFilter,
+    /// Em `CategoryName`: o `Enter` renomeia a categoria do cursor em vez de
+    /// criar uma nova — o mesmo molde do [`App::editing_description`] no modo
+    /// `Editing` (dois destinos numa linha de texto).
+    renomear_categoria: bool,
+    /// Modo para onde voltar quando a sobreposição fechar — a ajuda, a caixa de
+    /// temas e a caixa de categorias abrem-se por cima da vista e guardam aqui
+    /// de onde vieram.
     return_mode: InputMode,
-    /// Fim da janela da guarda do `c` no lixo.
-    armed_until: Option<Instant>,
+    /// A guarda de duas pressões: **o que** está armado e até quando (ADR §6).
+    armado: Option<(Guarda, Instant)>,
     quitting: bool,
 }
 
@@ -226,6 +310,11 @@ impl App {
     ///
     /// O cursor da caixa abre na posição do tema **aplicado**, e não na primeira
     /// do catálogo: é o que faz o `Enter` sem navegar não mudar nada.
+    ///
+    /// Uma excepção ao `status` inicial `Idle`: se a leitura que criou o [`Store`]
+    /// normalizou referências de categoria, o `App` nasce com o aviso `sticky` da
+    /// §C.5.1 (ADR Adenda 1) — a alteração que aconteceu sem o utilizador saber
+    /// é a primeira coisa que ele lê.
     #[must_use]
     pub fn com_tema(
         store: Store,
@@ -249,10 +338,20 @@ impl App {
             buffer: Vec::new(),
             cursor: 0,
             editing_description: false,
+            categoria_cursor: 0,
+            category_filter: CategoryFilter::Todas,
+            renomear_categoria: false,
             return_mode: InputMode::Normal,
-            armed_until: None,
+            armado: None,
             quitting: false,
         };
+        // O aviso da abertura (§C.5.1): nasce do que **esta leitura** normalizou
+        // — é ela que conta, não o ficheiro (ADR Adenda 1). Sem referências
+        // recuperadas o `App` nasce em `Idle`, como sempre.
+        let recuperadas = app.store.referencias_recuperadas();
+        if recuperadas > 0 {
+            app.status = Status::sticky(aviso_de_referencias(recuperadas));
+        }
         app.clamp_selection();
         app
     }
@@ -281,9 +380,34 @@ impl App {
     }
 
     /// A guarda do `c` no lixo está armada (e dentro do prazo)?
+    ///
+    /// Pergunta **pelo alvo**: com a guarda a ter alvo (ADR §6), um `armed()`
+    /// que respondesse «há alguma guarda armada» diria ao rodapé do lixo para
+    /// anunciar `c outra vez confirma` com a eliminação de uma categoria armada.
     #[must_use]
     pub fn armed(&self) -> bool {
-        self.armed_until.is_some_and(|fim| Instant::now() < fim)
+        matches!(&self.armado, Some((Guarda::EsvaziarLixo, fim)) if Instant::now() < *fim)
+    }
+
+    /// A categoria armada para eliminação (`d` uma vez), se a janela ainda
+    /// correr.
+    ///
+    /// É o que o desenho da caixa precisa para a linha de estado `Eliminar
+    /// «Trabalho»? N tarefas ficam sem categoria` (§C.4): o texto é do desenho, o
+    /// **alvo** é do `App`.
+    #[must_use]
+    pub fn categoria_armada(&self) -> Option<&CategoryId> {
+        match &self.armado {
+            Some((Guarda::EliminarCategoria(id), fim)) if Instant::now() < *fim => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Em `CategoryName`: o `Enter` vai renomear (e não criar) — é o que diz ao
+    /// desenho se a linha 22 se etiqueta `Renomear` ou `Nova categoria` (§C.4).
+    #[must_use]
+    pub const fn renomeando_categoria(&self) -> bool {
+        self.renomear_categoria
     }
 
     /// O contexto por baixo da sobreposição: com a ajuda aberta, é a vista de
@@ -340,14 +464,29 @@ impl App {
         }
         let ids = match self.filter {
             // Pendentes primeiro, concluídas no fim: dois grupos, cada um pela
-            // ordem escolhida (o `view` é estável).
+            // ordem escolhida (o `view` é estável). A categoria atravessa as
+            // **duas** chamadas: com `pendentes de Trabalho` o eixo vale nos dois
+            // grupos, e passar `Todas` a uma delas fazia as concluídas de outra
+            // categoria aparecerem na lista.
             Filter::All => {
-                let mut ids = self.store.view(Filter::Active, self.sort, &self.query);
-                ids.extend(self.store.view(Filter::Done, self.sort, &self.query));
+                let mut ids = self.store.view(
+                    Filter::Active,
+                    self.sort,
+                    self.category_filter.clone(),
+                    &self.query,
+                );
+                ids.extend(self.store.view(
+                    Filter::Done,
+                    self.sort,
+                    self.category_filter.clone(),
+                    &self.query,
+                ));
                 ids
             }
             // Estes dois filtros já são um grupo homogéneo: não há o que dividir.
-            filter => self.store.view(filter, self.sort, &self.query),
+            filter => self
+                .store
+                .view(filter, self.sort, self.category_filter.clone(), &self.query),
         };
         ids.iter().filter_map(|id| self.store.find(id)).collect()
     }
@@ -386,11 +525,15 @@ impl App {
 
     /// Aplica uma acção. É o único ponto que toca na `Db`.
     pub fn handle(&mut self, action: Action) {
-        // Qualquer acção que não seja o `c` do lixo desarma a guarda (§5,
-        // mudança 7) — mas o `Ignore` não: um `Release`/`Repeat` ou uma tecla
-        // não mapeada não pode desarmar o que o utilizador acabou de armar.
-        if action != Action::EmptyTrash && action != Action::Ignore {
-            self.armed_until = None;
+        // A guarda tem **alvo** (ADR §6): só a acção que confirma aquilo que está
+        // armado a mantém armada; qualquer outra desarma (§5, mudança 7). A regra
+        // não pode ser «tudo excepto `EmptyTrash`» — com o `d` da caixa a valer
+        // uma segunda pressão, ele desarmava a guarda que ele próprio acabara de
+        // armar e a eliminação nunca chegava a confirmar-se. O `Ignore` também não
+        // desarma: um `Release`/`Repeat` ou uma tecla não mapeada não pode desfazer
+        // o que o utilizador acabou de armar.
+        if action != Action::Ignore && !self.mesmo_alvo_armado(action) {
+            self.armado = None;
         }
 
         if self.mode.is_text() {
@@ -402,10 +545,22 @@ impl App {
             Action::Quit => self.quitting = true,
             Action::Up => self.move_selection(-1),
             Action::Down => self.move_selection(1),
-            Action::Home => self.select_index(0),
+            Action::Home => {
+                // Na caixa de categorias, topo é a primeira entrada; a lista
+                // não é tocada (o mapa da caixa manda `g`/`G` para aqui).
+                if matches!(self.mode, InputMode::Category) {
+                    self.categoria_cursor = 0;
+                } else {
+                    self.select_index(0);
+                }
+            }
             Action::End => {
-                let ultimo = self.visible().len().saturating_sub(1);
-                self.select_index(ultimo);
+                if matches!(self.mode, InputMode::Category) {
+                    self.categoria_cursor = self.entradas_da_caixa().saturating_sub(1);
+                } else {
+                    let ultimo = self.visible().len().saturating_sub(1);
+                    self.select_index(ultimo);
+                }
             }
             Action::AddStart => self.open_line(InputMode::Adding, String::new(), false),
             Action::EditStart => {
@@ -455,12 +610,11 @@ impl App {
                 self.mode = InputMode::Help;
             }
             Action::InputCancel => {
-                // A ajuda volta para a vista de onde foi aberta; do lixo sai-se
-                // sempre para a lista.
-                self.mode = if matches!(self.mode, InputMode::Help) {
-                    self.return_mode
-                } else {
-                    InputMode::Normal
+                // A ajuda e a caixa de categorias voltam para a vista de onde
+                // abriram; do lixo sai-se sempre para a lista.
+                self.mode = match self.mode {
+                    InputMode::Help | InputMode::Category => self.return_mode,
+                    _ => InputMode::Normal,
                 };
                 self.return_mode = InputMode::Normal;
             }
@@ -468,6 +622,13 @@ impl App {
             Action::ThemeMove(delta) => self.mover_na_caixa_de_temas(delta),
             Action::ThemeConfirm => self.confirmar_tema(),
             Action::ThemeCancel => self.cancelar_tema(),
+            Action::CategoryView => self.abrir_caixa_de_categorias(),
+            Action::CategoryMove(delta) => self.mover_na_caixa_de_categorias(delta),
+            Action::CategoryAssign => self.atribuir_categoria(),
+            Action::CategoryNew => self.abrir_linha_do_nome(false),
+            Action::CategoryRename => self.abrir_linha_do_nome(true),
+            Action::CategoryDelete => self.confirmar_ou_eliminar_categoria(),
+            Action::CycleCategoryFilter => self.ciclar_filtro_de_categoria(),
             Action::SetPriority(priority) => self.set_priority(priority),
             // `Input`/`InputConfirm` só existem em modos de texto (tratados
             // acima) e `Ignore` é a ausência de acção.
@@ -481,8 +642,33 @@ impl App {
             Action::Quit => self.quitting = true,
             Action::Input(key) => self.edit_buffer(key),
             Action::InputConfirm => self.confirm_line(),
-            Action::InputCancel => self.close_line(),
+            Action::InputCancel => {
+                // Cancelar o nome devolve à **caixa** (é de lá que a linha
+                // abriu), como o cancelar de uma tarefa devolve à lista: a caixa
+                // mantém o cursor onde estava (§C.2).
+                if matches!(self.mode, InputMode::CategoryName) {
+                    self.voltar_a_caixa();
+                } else {
+                    self.close_line();
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// A acção é a **confirmação** daquilo que está armado (mesmo `d` da caixa,
+    /// mesmo `c` do lixo)?
+    ///
+    /// É esta pergunta — e não uma lista de excepções — que decide o desarme:
+    /// qualquer acção que não confirme o alvo armado desarma-o, e o alvo armado
+    /// não é desarmado pela própria tecla que o confirmou.
+    fn mesmo_alvo_armado(&self, action: Action) -> bool {
+        let Some((armado, _)) = &self.armado else {
+            return false;
+        };
+        match armado {
+            Guarda::EsvaziarLixo => action == Action::EmptyTrash,
+            Guarda::EliminarCategoria(_) => action == Action::CategoryDelete,
         }
     }
 
@@ -763,7 +949,7 @@ impl App {
         if self.armed() {
             self.empty_trash();
         } else {
-            self.armed_until = Some(Instant::now() + ARM_WINDOW);
+            self.armado = Some((Guarda::EsvaziarLixo, Instant::now() + ARM_WINDOW));
             self.status = Status::message(format!(
                 "Esvaziar o lixo? {total} entradas, sem volta atrás  ·  c outra vez confirma"
             ));
@@ -783,7 +969,7 @@ impl App {
             }
             Err(err) => self.falha(err),
         }
-        self.armed_until = None;
+        self.armado = None;
         self.clamp_selection();
     }
 
@@ -796,12 +982,15 @@ impl App {
         self.clamp_selection();
     }
 
-    /// `Esc` em repouso: primeiro tira a mensagem, depois limpa busca e filtro.
-    /// Nunca sai — sair é só `q` ou `Ctrl+C` (§5, mudança 1).
+    /// `Esc` em repouso: primeiro tira a mensagem, depois limpa busca, filtro e
+    /// categoria. Nunca sai — sair é só `q` ou `Ctrl+C` (§5, mudança 1).
     fn dismiss(&mut self) {
         if self.status == Status::Idle {
             self.query.clear();
             self.filter = Filter::All;
+            // O eixo da categoria é limpo com os outros dois (ADR §8): o `Esc`
+            // em repouso põe a lista inteira, não «quase toda».
+            self.category_filter = CategoryFilter::Todas;
             self.clamp_selection();
         } else {
             self.status = Status::Idle;
@@ -918,6 +1107,258 @@ impl App {
         self.theme_cursor = posicao_no_catalogo(self.theme);
     }
 
+    // ------------------------------------- caixa de categorias (§C do @designer)
+
+    /// Número de linhas da caixa: `sem categoria` mais as categorias.
+    ///
+    /// É sempre ≥ 1 — o `None` é uma linha como as outras (§C.1) —, logo o
+    /// cursor nunca precisa de um `Option`: ao contrário da seleção da lista,
+    /// «sem categorias» não é «sem linha nenhuma».
+    fn entradas_da_caixa(&self) -> usize {
+        self.store.categories().len() + 1
+    }
+
+    /// A categoria debaixo do cursor — `None` quando ele está em `sem categoria`
+    /// (a 1.ª linha), que não é uma categoria e não se renomeia nem se elimina.
+    fn categoria_no_cursor(&self) -> Option<&Category> {
+        self.store
+            .categories()
+            .get(self.categoria_cursor.checked_sub(1)?)
+    }
+
+    /// O cursor da caixa nunca fica pendurado fora das entradas — molde do
+    /// [`App::clamp_selection`], para a caixa.
+    ///
+    /// Sem isto, eliminar a categoria debaixo do cursor deixava o índice a
+    /// apontar para uma linha que já não existe: o `Enter` a seguir atribuía a
+    /// categoria errada (ou nenhuma) sem o utilizador perceber porquê.
+    fn clamp_categoria_cursor(&mut self) {
+        let ultimo = self.entradas_da_caixa().saturating_sub(1);
+        if self.categoria_cursor > ultimo {
+            self.categoria_cursor = ultimo;
+        }
+    }
+
+    /// `C` — abre a caixa de categorias.
+    ///
+    /// O cursor abre **na primeira linha** (`sem categoria`), que é o que o
+    /// frame `80x24-15-categorias` fixa (§C.5): a linha de estado diz o que a
+    /// tarefa selecionada tem agora, e é isso que impede atribuir o que já lá
+    /// está. Abre-se mesmo sem tarefas (ADR §7) — é a única forma de criar
+    /// categorias numa base vazia.
+    ///
+    /// Só na lista: na vista do lixo o mapa não tem `C` (§C.2), e esta guarda
+    /// mantém a promessa mesmo para quem chame a acção por outro caminho.
+    fn abrir_caixa_de_categorias(&mut self) {
+        if !matches!(self.mode, InputMode::Normal) {
+            return;
+        }
+        self.categoria_cursor = 0;
+        self.return_mode = self.mode;
+        self.mode = InputMode::Category;
+    }
+
+    /// Fecha a caixa e volta à vista de onde ela abriu — sem atribuir nada.
+    fn fechar_caixa_de_categorias(&mut self) {
+        self.mode = self.return_mode;
+        self.return_mode = InputMode::Normal;
+        self.clamp_categoria_cursor();
+        self.clamp_selection();
+    }
+
+    /// `j`/`k`/`↓`/`↑` na caixa: move o cursor, que **para** nos extremos (a
+    /// lista não roda em ciclo, como a das temas).
+    fn mover_na_caixa_de_categorias(&mut self, delta: isize) {
+        if !matches!(self.mode, InputMode::Category) {
+            return;
+        }
+        let ultimo = self.entradas_da_caixa() as isize - 1;
+        self.categoria_cursor = (self.categoria_cursor as isize + delta).clamp(0, ultimo) as usize;
+    }
+
+    /// `Enter` na caixa: atribui a categoria do cursor à tarefa selecionada e
+    /// fecha — ou **tira** a atribuição, se o cursor estiver em `sem categoria`
+    /// (§C.2).
+    ///
+    /// Uma atribuição que não muda nada **não é gravada**: o ficheiro fica
+    /// exactamente como estava e a mensagem di-lo («já estava em…»). Gravar o
+    /// mesmo por cima escrevia o `db.json` e o `.bak` sem nada ter mudado — e a
+    /// linha de estado da caixa existe precisamente para se ver o que já lá está.
+    fn atribuir_categoria(&mut self) {
+        if !matches!(self.mode, InputMode::Category) {
+            return;
+        }
+        let Some(tarefa) = self.selected_id() else {
+            // A caixa abre sem tarefas (ADR §7): o `Enter` não tem alvo e di-lo.
+            self.status = Status::error("Erro: não há nenhuma tarefa selecionada");
+            return;
+        };
+        let alvo = self
+            .categoria_no_cursor()
+            .map(|categoria| categoria.id.clone());
+        let nome = self
+            .categoria_no_cursor()
+            .map(|categoria| nome_na_mensagem(&categoria.name));
+        let actual = self
+            .store
+            .find(&tarefa)
+            .and_then(|todo| todo.category_id.clone());
+
+        if actual == alvo {
+            self.fechar_caixa_de_categorias();
+            self.status = Status::message(match nome {
+                Some(nome) => format!("Já estava em «{nome}»"),
+                None => "Já estava sem categoria".to_owned(),
+            });
+            return;
+        }
+        match self.store.assign_category(&tarefa, alvo.as_ref()) {
+            Ok(()) => {
+                self.fechar_caixa_de_categorias();
+                self.status = Status::message(match nome {
+                    Some(nome) => format!("Atribuída a «{nome}»"),
+                    None => "Atribuição de categoria removida".to_owned(),
+                });
+            }
+            Err(err) => self.falha(err),
+        }
+    }
+
+    /// `a` (criar) e `e` (renomear): abre a linha do nome, na linha 22, **por
+    /// cima da caixa**.
+    ///
+    /// Em `sem categoria` o `e` não faz nada: o `None` não se renomeia (§C.2), e
+    /// é por isso que o rodapé de lá não anuncia o `e`. Em `e` o buffer abre com
+    /// o nome actual — o cursor da caixa fica na linha que se vai gravar.
+    fn abrir_linha_do_nome(&mut self, renomear: bool) {
+        if !matches!(self.mode, InputMode::Category) {
+            return;
+        }
+        let inicial = if renomear {
+            match self.categoria_no_cursor() {
+                Some(categoria) => categoria.name.clone(),
+                None => return,
+            }
+        } else {
+            String::new()
+        };
+        self.renomear_categoria = renomear;
+        self.open_line(InputMode::CategoryName, inicial, false);
+        // A linha abriu de dentro da caixa: é para lá que o `Enter` e o `Esc`
+        // voltam (o `return_mode` é o que o faz, como na ajuda e nas temas).
+        self.return_mode = InputMode::Category;
+    }
+
+    /// Volta à caixa depois de gravar (ou de cancelar) o nome, com o cursor onde
+    /// estava (§C.2: a caixa não perde o cursor no modo de texto).
+    fn voltar_a_caixa(&mut self) {
+        self.mode = self.return_mode;
+        self.return_mode = InputMode::Normal;
+        self.buffer.clear();
+        self.cursor = 0;
+        self.editing_description = false;
+        self.renomear_categoria = false;
+        self.clamp_categoria_cursor();
+    }
+
+    /// `d` na caixa: a primeira pressão arma a guarda (5 s), a segunda elimina.
+    ///
+    /// Em `sem categoria` — e sem categorias nenhumas — não faz nada: não há o
+    /// que eliminar. A guarda é **daquela** categoria: armar numa e carregar em
+    /// `d` noutra re-arma na nova, e nunca elimina a que não foi anunciada.
+    fn confirmar_ou_eliminar_categoria(&mut self) {
+        if !matches!(self.mode, InputMode::Category) {
+            return;
+        }
+        let Some(id) = self.categoria_no_cursor().map(|c| c.id.clone()) else {
+            return;
+        };
+        if self.categoria_armada() == Some(&id) {
+            self.eliminar_categoria(&id);
+        } else {
+            self.armado = Some((Guarda::EliminarCategoria(id), Instant::now() + ARM_WINDOW));
+        }
+    }
+
+    /// Elimina a categoria (a segunda pressão do `d`).
+    ///
+    /// O trabalho é `Store::delete_category`, que tira a atribuição das tarefas
+    /// da lista **e do lixo** e devolve quantas ficaram sem categoria: a TUI
+    /// compõe a mensagem e diz o preço (§C.4), nunca o esconde.
+    ///
+    /// Se a categoria eliminada era a do filtro, o filtro volta a `Todas`: senão
+    /// a lista aparecia vazia sem explicação (ADR §8 e §C.3).
+    fn eliminar_categoria(&mut self, id: &CategoryId) {
+        let nome = self
+            .store
+            .category(id)
+            .map(|categoria| categoria.name.clone())
+            .unwrap_or_default();
+        match self.store.delete_category(id) {
+            Ok(afectadas) => {
+                if self.category_filter.id() == Some(id) {
+                    self.category_filter = CategoryFilter::Todas;
+                }
+                self.armado = None;
+                self.clamp_categoria_cursor();
+                self.clamp_selection();
+                self.status = Status::message(mensagem_eliminada(&nome, afectadas));
+            }
+            Err(err) => self.falha(err),
+        }
+    }
+
+    /// `F` em repouso: cicla o filtro de categoria — `todas → sem categoria →
+    /// <as categorias, pela ordem de inserção> → todas` (ADR §8, §C.9).
+    ///
+    /// O ciclo é sobre as categorias que existem **agora**: uma categoria
+    /// eliminada não deixa o filtro pendurado nela (a comparação com a lista é o
+    /// que o repõe em `todas`, mesmo que a eliminação tenha vindo de outro
+    /// caminho).
+    fn ciclar_filtro_de_categoria(&mut self) {
+        if !matches!(self.mode, InputMode::Normal) {
+            return;
+        }
+        let categorias: Vec<CategoryId> = self
+            .store
+            .categories()
+            .iter()
+            .map(|categoria| categoria.id.clone())
+            .collect();
+        self.category_filter = match &self.category_filter {
+            CategoryFilter::Todas => CategoryFilter::SemCategoria,
+            CategoryFilter::SemCategoria => categorias
+                .first()
+                .cloned()
+                .map_or(CategoryFilter::Todas, CategoryFilter::Uma),
+            CategoryFilter::Uma(id) => categorias
+                .iter()
+                .position(|candidata| candidata == id)
+                .and_then(|posicao| categorias.get(posicao + 1))
+                .cloned()
+                .map_or(CategoryFilter::Todas, CategoryFilter::Uma),
+        };
+        self.clamp_selection();
+    }
+
+    /// Erro de nome, na linha de estado da caixa (§C.4): diz **porquê** e o
+    /// texto escrito **não se perde** (a linha continua aberta).
+    ///
+    /// A mensagem cita o nome **escrito** e não o que lá está: o frame
+    /// `80x24-19-categorias-erro` tem `trabalho` no buffer e «trabalho» no erro,
+    /// embora a categoria existente se chame `Trabalho` — a colisão ignora as
+    /// maiúsculas (ADR §2) e o que se cita é o que o utilizador escreveu.
+    fn erro_de_nome(&mut self, err: OpsError, escrito: &str) {
+        self.status = match err {
+            OpsError::EmptyName => Status::error("Erro: o nome não pode ficar vazio"),
+            OpsError::DuplicateName(_) => Status::error(format!(
+                "Erro: já existe uma categoria chamada «{}»",
+                nome_na_mensagem(escrito)
+            )),
+            outro => erro(outro, self.store.path()),
+        };
+    }
+
     // -------------------------------------------------------- linha de texto
 
     fn open_line(&mut self, mode: InputMode, texto: String, descricao: bool) {
@@ -1030,11 +1471,15 @@ impl App {
                 match import_from_path(&mut self.store, Path::new(&caminho)) {
                     Ok(relatorio) => {
                         let prefixo = if relatorio.sem_alteracoes() {
-                            "Importação sem alterações"
+                            "Importação sem alterações: "
                         } else {
-                            "Importado"
+                            "Importado: "
                         };
-                        self.status = Status::message(format!("{prefixo}: {}", relatorio.resumo()));
+                        // As partes são do `core`, a largura é da TUI: a linha
+                        // junta-as até às 79 colunas da linha 22 e fecha com
+                        // `, …` — o corte cai numa fronteira de contador (§C.4.1).
+                        self.status =
+                            Status::message(compor_relatorio(prefixo, &relatorio.partes()));
                         self.clamp_selection();
                     }
                     Err(err) => self.status = Status::error(format!("Erro: {err}")),
@@ -1046,12 +1491,49 @@ impl App {
                 if caminho.is_empty() {
                     return;
                 }
-                match export_csv_to_path(self.store.todos(), Path::new(&caminho)) {
+                // A `Db` inteira e não só as tarefas: o nome da categoria vive
+                // nas categorias (T3).
+                match export_csv_to_path(self.store.db(), Path::new(&caminho)) {
                     Ok(n) => {
                         self.status =
                             Status::message(format!("Exportadas {n} tarefas para {caminho}"));
                     }
                     Err(err) => self.status = Status::error(format!("Erro: {err}")),
+                }
+            }
+            InputMode::CategoryName => {
+                if self.renomear_categoria {
+                    let Some(id) = self.categoria_no_cursor().map(|c| c.id.clone()) else {
+                        // A categoria do cursor deixou de existir: fecha a linha
+                        // sem inventar um alvo (pela caixa não acontece).
+                        self.voltar_a_caixa();
+                        return;
+                    };
+                    let antigo = self
+                        .store
+                        .category(&id)
+                        .map(|categoria| categoria.name.clone())
+                        .unwrap_or_default();
+                    match self.store.rename_category(&id, &texto) {
+                        Ok(()) => {
+                            self.voltar_a_caixa();
+                            self.status = Status::message(format!(
+                                "Renomeada «{}» para «{}»",
+                                nome_na_mensagem(&antigo),
+                                nome_na_mensagem(&texto)
+                            ));
+                        }
+                        Err(err) => self.erro_de_nome(err, &texto),
+                    }
+                } else {
+                    match self.store.add_category(&texto) {
+                        Ok(_id) => {
+                            self.voltar_a_caixa();
+                            self.status =
+                                Status::message(format!("Criada «{}»", nome_na_mensagem(&texto)));
+                        }
+                        Err(err) => self.erro_de_nome(err, &texto),
+                    }
                 }
             }
             // Normal, Help e Trash não têm linha (o `map_key` não abre nenhuma).
@@ -1144,6 +1626,49 @@ mod tests {
             .id
             .clone();
         app.store.toggle_done(&id).expect("concluir");
+    }
+
+    /// Um `App` com categorias já criadas — pela porta do `core`, que é a única
+    /// que o `App` usa (`add_category`).
+    fn app_com_categorias(
+        tag: &str,
+        titulos: &[&str],
+        categorias: &[&str],
+    ) -> (PathBuf, App, Vec<CategoryId>) {
+        let (path, mut app) = app(tag, titulos);
+        let ids = categorias
+            .iter()
+            .map(|nome| app.store.add_category(nome).expect("criar categoria"))
+            .collect();
+        (path, app, ids)
+    }
+
+    /// O `id` da tarefa com este título, na `Db`.
+    fn id_de(app: &App, titulo: &str) -> TodoId {
+        app.store()
+            .todos()
+            .iter()
+            .find(|t| t.title == titulo)
+            .expect("tarefa existe")
+            .id
+            .clone()
+    }
+
+    /// Atribui a categoria à tarefa, pela porta do `core` (o caminho do `App`).
+    fn atribui(app: &mut App, titulo: &str, categoria: &CategoryId) {
+        let id = id_de(app, titulo);
+        app.store
+            .assign_category(&id, Some(categoria))
+            .expect("atribuir");
+    }
+
+    /// Nomes das categorias, pela ordem de inserção.
+    fn categorias_na_db(app: &App) -> Vec<String> {
+        app.store()
+            .categories()
+            .iter()
+            .map(|categoria| categoria.name.clone())
+            .collect()
     }
 
     #[test]
@@ -1628,6 +2153,80 @@ mod tests {
         );
     }
 
+    /// Um ficheiro com uma referência de categoria que não resolve: a leitura
+    /// normaliza-a, conta-a e o `App` nasce com o aviso da §C.5.1 (ADR
+    /// Adenda 1) — é a única mensagem que a aplicação cria sem uma tecla a
+    /// pedi-la.
+    fn app_com_referencia_pendente(tag: &str) -> App {
+        let dir = std::env::temp_dir().join(format!(
+            "todo-ratatui-app-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).expect("criar diretório de teste");
+        let path = dir.join("db.json");
+        fs::write(
+            &path,
+            r#"{
+  "schema": 3,
+  "todos": [
+    {
+      "id": "t1",
+      "title": "sem categoria conhecida",
+      "created_at": "2026-09-19T09:00:00+01:00",
+      "category_id": "categoria-que-nao-existe"
+    }
+  ],
+  "trash": [],
+  "categories": []
+}"#,
+        )
+        .expect("escrever a referência pendente");
+        let store = Store::open(&path).expect("abrir");
+        App::new(store)
+    }
+
+    /// O aviso da abertura nasce `sticky`: não expira aos 3 s (o `tick` não lhe
+    /// toca) e a primeira acção toma-lhe o lugar — como qualquer `sticky` (§4).
+    #[test]
+    fn aviso_da_abertura_nasce_sticky_e_a_accao_seguinte_substitui_o() {
+        let mut tui = app_com_referencia_pendente("aviso-abertura");
+        assert_eq!(
+            tui.status,
+            Status::sticky(
+                "Aviso: 1 tarefa sem categoria — a categoria não existe  ·  C categorias"
+            ),
+            "a contagem é a da leitura que criou o `App`"
+        );
+
+        tui.tick(Instant::now() + Duration::from_secs(600));
+        assert!(
+            matches!(tui.status, Status::Sticky(_)),
+            "o aviso não expira: {:?}",
+            tui.status
+        );
+
+        tecla(&mut tui, ' ');
+        assert!(
+            matches!(tui.status, Status::Message { .. }),
+            "a primeira acção substitui o aviso: {:?}",
+            tui.status
+        );
+        assert_eq!(
+            tui.status.text(),
+            Some("Concluída «sem categoria conhecida»"),
+        );
+    }
+
+    /// Sem referências recuperadas não há aviso nenhum: o caso normal — e o de
+    /// um ficheiro já curado por uma gravação — nasce em `Idle`.
+    #[test]
+    fn sem_referencias_recuperadas_a_abertura_nao_avisa() {
+        let (_path, tui) = app("sem-aviso", &["uma tarefa"]);
+        assert_eq!(tui.store().referencias_recuperadas(), 0);
+        assert_eq!(tui.status, Status::Idle);
+    }
+
     /// O `tick` não é um segundo caminho de escrita: expira a mensagem e mais
     /// nada (não marca nada sujo, não grava).
     #[test]
@@ -1645,6 +2244,566 @@ mod tests {
             fs::read(&path).expect("reler o ficheiro"),
             antes,
             "nem grava: a gravação continua reservada ao `App::handle`"
+        );
+    }
+
+    // ------------------------------------------ caixa de categorias (§C do T4)
+
+    /// Critério 2: `C` abre a caixa e, com ela aberta, as teclas da lista **não**
+    /// fazem o que fazem na lista — a mais perigosa é o `d`.
+    #[test]
+    fn c_abre_a_caixa_e_com_ela_aberta_a_lista_nao_governa() {
+        let (_path, mut app, _ids) = app_com_categorias("c-abre", &["a", "b"], &["Trabalho"]);
+        let (filtro, ordem) = (app.filter, app.sort);
+        let prioridade = app.store().todos()[0].priority;
+        let titulos = na_db(&app);
+
+        tecla(&mut app, 'C');
+        assert_eq!(app.mode, InputMode::Category);
+        assert_eq!(
+            app.categoria_cursor, 0,
+            "abre na 1.ª linha, que é `sem categoria` (§C.5)"
+        );
+
+        // O `d` da caixa arma a eliminação da categoria; não manda a tarefa
+        // selecionada para o lixo (a lista está à vista por baixo).
+        tecla(&mut app, 'd');
+        assert_eq!(na_db(&app), titulos, "nenhuma tarefa foi para o lixo");
+        assert_eq!(app.store().trash_len(), 0);
+        assert_eq!(
+            app.categoria_armada(),
+            None,
+            "o cursor está em `sem categoria`: não há o que armar"
+        );
+        assert_eq!(app.mode, InputMode::Category, "a caixa fica aberta");
+
+        for tecla_da_lista in ['s', 'f', '1', '2', '3', 't', 'c', 'u', 'L', '?'] {
+            tecla(&mut app, tecla_da_lista);
+        }
+        assert_eq!(app.sort, ordem, "«s» não ciclou a ordem");
+        assert_eq!(app.filter, filtro, "«f» não ciclou o estado");
+        assert_eq!(app.store().todos()[0].priority, prioridade, "«1» não mexeu");
+        assert_eq!(app.store().trash_len(), 0, "«c» não limpou nada");
+        assert_eq!(na_db(&app), titulos);
+        assert_eq!(app.mode, InputMode::Category, "e a caixa continua aberta");
+    }
+
+    /// Critério 3: `j`/`k`/`↓`/`↑` movem o cursor e **não passam dos limites**,
+    /// nos dois extremos.
+    #[test]
+    fn o_cursor_da_caixa_move_e_nao_passa_dos_limites() {
+        let (_path, mut app, _ids) = app_com_categorias("cursor-caixa", &[], &["A", "B"]);
+        tecla(&mut app, 'C');
+        assert_eq!(app.categoria_cursor, 0);
+
+        tecla(&mut app, 'k');
+        assert_eq!(app.categoria_cursor, 0, "no princípio fica");
+        carrega(&mut app, KeyCode::Up);
+        assert_eq!(app.categoria_cursor, 0);
+
+        tecla(&mut app, 'j');
+        assert_eq!(app.categoria_cursor, 1);
+        carrega(&mut app, KeyCode::Down);
+        assert_eq!(app.categoria_cursor, 2, "«B» é a última das 3 entradas");
+        tecla(&mut app, 'j');
+        assert_eq!(app.categoria_cursor, 2, "no fim fica");
+        carrega(&mut app, KeyCode::Down);
+        assert_eq!(app.categoria_cursor, 2);
+
+        // `g`/`G`: topo e fim (§C.2), e a lista não se mexe.
+        tecla(&mut app, 'g');
+        assert_eq!(app.categoria_cursor, 0);
+        tecla(&mut app, 'G');
+        assert_eq!(app.categoria_cursor, 2);
+        assert_eq!(app.list_state.selected(), None, "a lista não tem nada");
+    }
+
+    /// Critério 4: `Enter` numa categoria grava a atribuição **e fecha**.
+    #[test]
+    fn enter_atribui_a_categoria_do_cursor_e_fecha() {
+        let (path, mut app, ids) =
+            app_com_categorias("enter-atribui", &["a", "b"], &["Trabalho", "Casa"]);
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'j'); // «Trabalho»
+        assert_eq!(app.categoria_cursor, 1);
+
+        entra(&mut app);
+        assert_eq!(app.mode, InputMode::Normal, "o `Enter` fecha a caixa");
+        assert_eq!(app.store().todos()[0].category_id.as_ref(), Some(&ids[0]));
+        assert_eq!(app.store().todos()[1].category_id, None, "só a selecionada");
+
+        let reaberto = Store::open(&path).expect("reabrir");
+        assert_eq!(
+            reaberto.todos()[0].category_id.as_ref(),
+            Some(&ids[0]),
+            "gravou na confirmação"
+        );
+    }
+
+    /// Critério 4: `Enter` em `sem categoria` **tira** a atribuição.
+    #[test]
+    fn enter_em_sem_categoria_tira_a_atribuicao() {
+        let (path, mut app, ids) = app_com_categorias("enter-tira", &["a"], &["Trabalho"]);
+        atribui(&mut app, "a", &ids[0]);
+
+        tecla(&mut app, 'C');
+        assert_eq!(app.categoria_cursor, 0, "abre em `sem categoria`");
+        entra(&mut app);
+
+        assert_eq!(app.mode, InputMode::Normal);
+        assert_eq!(app.store().todos()[0].category_id, None);
+        assert_eq!(
+            Store::open(&path).expect("reabrir").todos()[0].category_id,
+            None,
+            "a remoção da atribuição chegou ao ficheiro"
+        );
+    }
+
+    /// Critério 4: os dois fechos que **não** atribuem nada deixam a `Db` igual —
+    /// nem uma gravação a mais.
+    #[test]
+    fn fechar_a_caixa_sem_mudar_nada_nao_toca_no_ficheiro() {
+        let (path, mut app, _ids) = app_com_categorias("fecha-sem-gravar", &["a"], &["Trabalho"]);
+        let antes = fs::read(&path).expect("ler o ficheiro");
+
+        // (1) `Enter` em `sem categoria` numa tarefa que já está sem categoria.
+        tecla(&mut app, 'C');
+        entra(&mut app);
+        assert_eq!(app.mode, InputMode::Normal);
+        assert_eq!(
+            fs::read(&path).expect("reler o ficheiro"),
+            antes,
+            "atribuir o que já lá estava não escreve nada"
+        );
+        assert!(app.status.text().unwrap().contains("Já estava"));
+
+        // (2) `Esc` com o cursor numa categoria: fecha sem atribuir.
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'j');
+        escapa(&mut app);
+        assert_eq!(app.mode, InputMode::Normal, "o `Esc` fecha a caixa");
+        assert_eq!(app.store().todos()[0].category_id, None);
+        assert_eq!(fs::read(&path).expect("reler o ficheiro"), antes);
+    }
+
+    /// Critério 5: `a` → linha de texto → `Enter` cria a categoria e **volta à
+    /// caixa**.
+    #[test]
+    fn a_na_caixa_cria_uma_categoria_e_volta_a_caixa() {
+        let (_path, mut app, _ids) = app_com_categorias("a-cria", &["a"], &[]);
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'a');
+        assert_eq!(app.mode, InputMode::CategoryName);
+        assert!(
+            !app.renomeando_categoria(),
+            "`a` cria; é o `e` que renomeia"
+        );
+
+        escreve(&mut app, "Trabalho");
+        entra(&mut app);
+
+        assert_eq!(app.mode, InputMode::Category, "voltou à caixa");
+        assert_eq!(categorias_na_db(&app), ["Trabalho"]);
+        assert_eq!(na_db(&app), ["a"], "não criou nenhuma tarefa");
+        assert!(app.status.text().unwrap().contains("Criada «Trabalho»"));
+    }
+
+    /// Critério 5: nome vazio → erro visível, nada criado, e a linha continua
+    /// aberta com o que lá estava (o texto não se perde).
+    #[test]
+    fn nome_vazio_da_erro_e_a_linha_continua_aberta() {
+        let (_path, mut app, _ids) = app_com_categorias("nome-vazio", &["a"], &[]);
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'a');
+        entra(&mut app);
+
+        assert_eq!(app.mode, InputMode::CategoryName, "a linha fica aberta");
+        assert!(app.status.is_error());
+        assert_eq!(
+            app.status.text().unwrap(),
+            "Erro: o nome não pode ficar vazio"
+        );
+        assert!(categorias_na_db(&app).is_empty(), "nada foi criado");
+
+        // E o que se escreve a seguir não perde nada.
+        escreve(&mut app, "Trabalho");
+        entra(&mut app);
+        assert_eq!(categorias_na_db(&app), ["Trabalho"]);
+    }
+
+    /// Critério 5: nome repetido (`Trabalho` vs `trabalho`) → erro **e** nada é
+    /// criado; o texto escrito fica no buffer e o ficheiro não é tocado.
+    #[test]
+    fn nome_repetido_ignora_maiusculas_e_nao_perde_o_texto() {
+        let (path, mut app, _ids) = app_com_categorias("nome-repetido", &["a"], &["Trabalho"]);
+        let antes = fs::read(&path).expect("ler o ficheiro");
+
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'a');
+        escreve(&mut app, "trabalho");
+        entra(&mut app);
+
+        assert_eq!(categorias_na_db(&app), ["Trabalho"], "nada foi criado");
+        assert_eq!(app.mode, InputMode::CategoryName, "a linha fica aberta");
+        assert_eq!(app.input(), "trabalho", "o texto escrito não se perde");
+        assert_eq!(
+            app.status.text().unwrap(),
+            "Erro: já existe uma categoria chamada «trabalho»"
+        );
+        assert_eq!(
+            fs::read(&path).expect("reler o ficheiro"),
+            antes,
+            "a recusa não escreve no ficheiro"
+        );
+
+        // `Esc` cancela e volta à caixa (o buffer não é gravado).
+        escapa(&mut app);
+        assert_eq!(app.mode, InputMode::Category);
+        assert_eq!(categorias_na_db(&app), ["Trabalho"]);
+    }
+
+    /// Critério 6: `e` renomeia mantendo o `id` — a atribuição das tarefas não
+    /// muda (asserção sobre a `Db`).
+    #[test]
+    fn e_renomeia_mantendo_o_id_e_a_atribuicao() {
+        let (path, mut app, ids) = app_com_categorias("renomear", &["a"], &["Trabalho"]);
+        atribui(&mut app, "a", &ids[0]);
+
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'j'); // «Trabalho»
+        tecla(&mut app, 'e');
+        assert_eq!(app.mode, InputMode::CategoryName);
+        assert!(app.renomeando_categoria(), "é o `e`, não o `a`");
+        assert_eq!(app.input(), "Trabalho", "o buffer abre com o nome actual");
+
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        escreve(&mut app, "Casa");
+        entra(&mut app);
+
+        assert_eq!(app.mode, InputMode::Category, "voltou à caixa");
+        assert_eq!(categorias_na_db(&app), ["Casa"]);
+        assert_eq!(app.store().categories()[0].id, ids[0], "o id não mudou");
+        assert_eq!(
+            app.store().todos()[0].category_id.as_ref(),
+            Some(&ids[0]),
+            "a atribuição continua a apontar para a mesma categoria"
+        );
+        let reaberto = Store::open(&path).expect("reabrir");
+        assert_eq!(reaberto.categories()[0].name, "Casa");
+        assert_eq!(reaberto.todos()[0].category_id.as_ref(), Some(&ids[0]));
+        assert!(
+            app.status
+                .text()
+                .unwrap()
+                .contains("Renomeada «Trabalho» para «Casa»")
+        );
+    }
+
+    /// §C.2: em `sem categoria` nem o `e` nem o `d` fazem nada — o `None` não se
+    /// renomeia nem se elimina.
+    #[test]
+    fn em_sem_categoria_o_e_e_o_d_nao_fazem_nada() {
+        let (_path, mut app, _ids) = app_com_categorias("sem-categoria", &["a"], &["Trabalho"]);
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'e');
+        assert_eq!(
+            app.mode,
+            InputMode::Category,
+            "`e` em `sem categoria` não abre linha nenhuma"
+        );
+        tecla(&mut app, 'd');
+        assert_eq!(app.categoria_armada(), None);
+        assert_eq!(categorias_na_db(&app), ["Trabalho"], "nada foi eliminado");
+    }
+
+    /// Critério 7: **a guarda tem alvo**. Armar a eliminação de uma categoria e
+    /// disparar o `c` do lixo não esvazia nada; armar o `c` do lixo e disparar o
+    /// `d` da caixa deixa o lixo intacto.
+    ///
+    /// As duas acções chegam pelo `handle` (e não por teclas) porque é o `handle`
+    /// que decide o desarme — é lá que vivia o sinalizador partilhado que o ADR
+    /// §6 existe para matar.
+    #[test]
+    fn a_guarda_tem_alvo_o_c_do_lixo_e_o_d_da_caixa_nao_se_confundem() {
+        // (1) armada a eliminação da categoria, o `c` do lixo não esvazia nada.
+        let (_path, mut app, ids) = app_com_categorias("guarda-lixo", &["a", "b"], &["Trabalho"]);
+        tecla(&mut app, 'd'); // «a» vai para o lixo
+        assert_eq!(app.store().trash_len(), 1);
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'j'); // «Trabalho»
+        app.handle(Action::CategoryDelete);
+        assert_eq!(
+            app.categoria_armada(),
+            Some(&ids[0]),
+            "o `d` armou o alvo dele"
+        );
+
+        app.handle(Action::EmptyTrash);
+        assert_eq!(app.store().trash_len(), 1, "o lixo não foi esvaziado");
+        assert_eq!(categorias_na_db(&app), ["Trabalho"], "nada foi eliminado");
+        assert_eq!(
+            app.categoria_armada(),
+            None,
+            "o `c` desarmou a guarda da categoria (outro alvo)"
+        );
+        assert!(
+            app.armed(),
+            "e armou a dele: a primeira pressão não esvazia"
+        );
+
+        // (2) armado o `c` do lixo, o `d` da caixa deixa o lixo intacto.
+        let (_outro, mut app, ids) = app_com_categorias("guarda-caixa", &["a", "b"], &["Trabalho"]);
+        tecla(&mut app, 'd');
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'j');
+        app.handle(Action::EmptyTrash);
+        assert!(app.armed(), "o `c` armou a guarda do lixo");
+
+        app.handle(Action::CategoryDelete);
+        assert_eq!(app.store().trash_len(), 1, "o lixo ficou intacto");
+        assert_eq!(categorias_na_db(&app), ["Trabalho"], "e nada foi eliminado");
+        assert_eq!(
+            app.categoria_armada(),
+            Some(&ids[0]),
+            "o `d` armou o alvo **dele**"
+        );
+
+        // A confirmação do mesmo alvo continua a funcionar (e o lixo continua lá).
+        app.handle(Action::CategoryDelete);
+        assert!(categorias_na_db(&app).is_empty(), "a segunda `d` elimina");
+        assert_eq!(app.store().trash_len(), 1, "o lixo não foi tocado por isso");
+    }
+
+    /// Critério 8: eliminar a categoria que está a ser filtrada volta o filtro a
+    /// `Todas` e `visible()` devolve a lista inteira.
+    #[test]
+    fn eliminar_a_categoria_filtrada_volta_o_filtro_a_todas() {
+        let (_path, mut app, ids) =
+            app_com_categorias("filtro-pendurado", &["a", "b", "c"], &["Trabalho"]);
+        atribui(&mut app, "a", &ids[0]);
+
+        tecla(&mut app, 'F'); // sem categoria
+        tecla(&mut app, 'F'); // Trabalho
+        assert_eq!(app.category_filter, CategoryFilter::Uma(ids[0].clone()));
+        assert_eq!(na_vista(&app), ["a"], "só a tarefa da categoria");
+
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'j'); // «Trabalho»
+        tecla(&mut app, 'd');
+        tecla(&mut app, 'd'); // elimina
+
+        assert_eq!(
+            app.category_filter,
+            CategoryFilter::Todas,
+            "o filtro volta a `Todas` (não fica pendurado numa categoria que já não existe)"
+        );
+        assert_eq!(na_vista(&app), ["a", "b", "c"], "`visible()` devolve tudo");
+        assert_eq!(
+            app.categoria_cursor, 0,
+            "o cursor clampa para a única entrada"
+        );
+        assert_eq!(
+            app.status.text().unwrap(),
+            "Eliminada «Trabalho» · 1 tarefa ficou sem categoria"
+        );
+    }
+
+    /// A eliminação diz **quantas** tarefas ficaram sem categoria — e o `core`
+    /// conta também as que estão no lixo (uma entrada do lixo continua atribuída).
+    #[test]
+    fn a_eliminacao_conta_as_tarefas_das_duas_listas() {
+        let (_path, mut app, ids) =
+            app_com_categorias("elimina-conta", &["a", "b", "c"], &["Trabalho"]);
+        atribui(&mut app, "a", &ids[0]);
+        atribui(&mut app, "b", &ids[0]);
+        atribui(&mut app, "c", &ids[0]);
+        tecla(&mut app, 'd'); // «a» (a selecionada) vai para o lixo, atribuída
+
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'j');
+        tecla(&mut app, 'd');
+        tecla(&mut app, 'd');
+
+        assert_eq!(
+            app.status.text().unwrap(),
+            "Eliminada «Trabalho» · 3 tarefas ficaram sem categoria"
+        );
+        assert_eq!(app.store().todos()[0].category_id, None);
+        assert_eq!(app.store().todos()[1].category_id, None);
+        assert_eq!(
+            app.store().db().trash[0].todo.category_id,
+            None,
+            "o lixo também perde a referência (senão voltava pendurada)"
+        );
+    }
+
+    /// Critério 9: `F` cicla `Todas → SemCategoria → <categorias, pela ordem de
+    /// inserção> → Todas`, sem mexer no `f` (estado).
+    #[test]
+    fn f_cicla_as_categorias_pela_ordem_de_insercao() {
+        let (_path, mut app, ids) =
+            app_com_categorias("ciclo-f", &["a"], &["Trabalho", "Casa", "Café"]);
+        let estado = app.filter;
+
+        let mut vistos = Vec::new();
+        for _ in 0..5 {
+            tecla(&mut app, 'F');
+            vistos.push(app.category_filter.clone());
+        }
+        assert_eq!(
+            vistos,
+            [
+                CategoryFilter::SemCategoria,
+                CategoryFilter::Uma(ids[0].clone()),
+                CategoryFilter::Uma(ids[1].clone()),
+                CategoryFilter::Uma(ids[2].clone()),
+                CategoryFilter::Todas,
+            ]
+        );
+        assert_eq!(app.filter, estado, "`F` não mexe no estado");
+    }
+
+    /// Critério 9: `Esc` em repouso limpa busca **e** filtro de estado **e**
+    /// filtro de categoria.
+    #[test]
+    fn esc_em_repouso_limpa_a_busca_o_estado_e_a_categoria() {
+        let (_path, mut app, ids) = app_com_categorias("esc-tudo", &["a", "b"], &["Trabalho"]);
+        atribui(&mut app, "a", &ids[0]);
+
+        tecla(&mut app, 'F'); // sem categoria
+        tecla(&mut app, 'F'); // Trabalho
+        tecla(&mut app, 'f'); // estado: pendentes
+        tecla(&mut app, '/');
+        escreve(&mut app, "a");
+        entra(&mut app);
+        assert_eq!(app.category_filter, CategoryFilter::Uma(ids[0].clone()));
+        assert_ne!(app.filter, Filter::All);
+        assert_eq!(app.query, "a");
+
+        escapa(&mut app); // tira a mensagem dos resultados
+        escapa(&mut app); // limpa busca + estado + categoria
+
+        assert!(app.query.is_empty());
+        assert_eq!(app.filter, Filter::All);
+        assert_eq!(app.category_filter, CategoryFilter::Todas);
+        assert!(!app.should_quit());
+    }
+
+    /// O eixo da categoria atravessa **as duas** chamadas de `view` do
+    /// `Filter::All` (pendentes e concluídas): se só uma o recebesse, a lista
+    /// mostrava tarefas de outra categoria.
+    #[test]
+    fn a_categoria_atravessa_as_duas_chamadas_da_vista() {
+        let (_path, mut app, ids) = app_com_categorias(
+            "duas-chamadas",
+            &["pendente", "feita", "outra", "outra feita"],
+            &["Trabalho", "Casa"],
+        );
+        atribui(&mut app, "pendente", &ids[0]);
+        atribui(&mut app, "feita", &ids[0]);
+        atribui(&mut app, "outra", &ids[1]);
+        atribui(&mut app, "outra feita", &ids[1]);
+        concluir(&mut app, "feita");
+        concluir(&mut app, "outra feita");
+        assert_eq!(
+            na_vista(&app),
+            ["pendente", "outra", "feita", "outra feita"],
+            "pendentes primeiro, concluídas no fim"
+        );
+
+        tecla(&mut app, 'F'); // sem categoria
+        tecla(&mut app, 'F'); // Trabalho
+        assert_eq!(app.filter, Filter::All, "o eixo do estado não mexeu");
+        assert_eq!(
+            na_vista(&app),
+            ["pendente", "feita"],
+            "uma de cada grupo — as duas chamadas levam o filtro"
+        );
+    }
+
+    /// A caixa abre **sem tarefas** (ADR §7) e o `a` funciona lá; o `Enter` não
+    /// tem alvo e di-lo, sem fechar a caixa.
+    #[test]
+    fn a_caixa_abre_sem_tarefas_e_o_a_cria_categorias() {
+        let (_path, mut app, _ids) = app_com_categorias("caixa-vazia", &[], &[]);
+        tecla(&mut app, 'C');
+        assert_eq!(app.mode, InputMode::Category);
+        assert_eq!(app.categoria_cursor, 0, "a única entrada é `sem categoria`");
+
+        tecla(&mut app, 'a');
+        escreve(&mut app, "Trabalho");
+        entra(&mut app);
+        assert_eq!(app.mode, InputMode::Category, "voltou à caixa");
+        assert_eq!(categorias_na_db(&app), ["Trabalho"]);
+
+        entra(&mut app);
+        assert!(app.status.is_error(), "o `Enter` sem alvo não é silencioso");
+        assert!(
+            app.status
+                .text()
+                .unwrap()
+                .contains("não há nenhuma tarefa selecionada")
+        );
+        assert_eq!(app.mode, InputMode::Category, "a caixa fica aberta");
+    }
+
+    /// Critério 10: eliminar a categoria debaixo do cursor deixa o cursor dentro
+    /// dos limites — sem panic e sem apontar para uma entrada que não existe.
+    #[test]
+    fn eliminar_a_categoria_do_cursor_deixa_o_cursor_dentro_dos_limites() {
+        let (_path, mut app, _ids) = app_com_categorias("clamp-cursor", &[], &["A", "B", "C"]);
+        tecla(&mut app, 'C');
+        tecla(&mut app, 'G');
+        assert_eq!(app.categoria_cursor, 3, "a última entrada é «C»");
+
+        tecla(&mut app, 'd');
+        tecla(&mut app, 'd');
+        assert_eq!(categorias_na_db(&app), ["A", "B"]);
+        assert_eq!(
+            app.categoria_cursor, 2,
+            "o cursor clampa para a última entrada"
+        );
+
+        // Continua a apontar para uma categoria a sério (não para o vazio).
+        tecla(&mut app, 'e');
+        assert_eq!(app.input(), "B");
+        escapa(&mut app);
+
+        // Esvaziar a caixa: o cursor para em `sem categoria` (índice 0).
+        for _ in 0..2 {
+            tecla(&mut app, 'g');
+            tecla(&mut app, 'j'); // a 1.ª categoria
+            tecla(&mut app, 'd');
+            tecla(&mut app, 'd');
+        }
+        assert!(categorias_na_db(&app).is_empty());
+        assert_eq!(app.categoria_cursor, 0);
+        assert_eq!(
+            app.mode,
+            InputMode::Category,
+            "a caixa continua a responder"
+        );
+        tecla(&mut app, 'j');
+        assert_eq!(app.categoria_cursor, 0, "só há `sem categoria`");
+        tecla(&mut app, 'k');
+        assert_eq!(app.categoria_cursor, 0);
+    }
+
+    /// §C.2: na vista do lixo as teclas das categorias são **mortas** — não se
+    /// abre a caixa por cima do lixo nem se filtra a lista de lá.
+    #[test]
+    fn no_lixo_nao_se_abre_a_caixa_nem_se_filtra_categoria() {
+        let (_path, mut app, _ids) = app_com_categorias("lixo-mortas", &["a"], &["Trabalho"]);
+        tecla(&mut app, 'L');
+        assert_eq!(app.mode, InputMode::Trash);
+
+        tecla(&mut app, 'C');
+        assert_eq!(app.mode, InputMode::Trash, "`C` não abre a caixa no lixo");
+        tecla(&mut app, 'F');
+        assert_eq!(
+            app.category_filter,
+            CategoryFilter::Todas,
+            "`F` não filtra a partir do lixo"
         );
     }
 }

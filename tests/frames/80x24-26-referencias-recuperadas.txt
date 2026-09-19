@@ -20,5 +20,5 @@ filtro: todas · ordem: prioridade · lixo: 3 (L)                           cria
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
-Descrição: ver ADR — tmp ao lado do ficheiro, nunca em /tmp                     
+Aviso: 2 tarefas sem categoria — a categoria não existe  ·  C categorias        
 a nova  e editar  Espaço concluir  d remover  u desfazer  / buscar  ? ajuda     

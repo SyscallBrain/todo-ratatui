@@ -14,11 +14,12 @@ pub mod store;
 
 pub use atomic::write_atomic;
 pub use import_export::{
-    CSV_COLUMNS, ExportError, ImportError, ImportReport, export_csv_to_path, import_from_path,
+    CSV_COLUMNS, CSV_COLUMNS_V11, ExportError, ImportError, ImportReport, export_csv_to_path,
+    import_from_path,
 };
-pub use model::{Priority, Todo, TodoError, TodoId};
+pub use model::{Category, CategoryId, Priority, Todo, TodoError, TodoId};
 pub use ops::{ClearOutcome, OpsError, TRASH_LIMIT};
-pub use query::{Counts, Filter, SortKey};
+pub use query::{CategoryFilter, Counts, Filter, SortKey};
 pub use store::{
     Db, ENV_DB, SCHEMA_VERSION, Store, StoreError, Trashed, backup_path_for, resolve_path,
 };
