@@ -3,6 +3,44 @@
 O formato segue de perto o [Keep a Changelog](https://keepachangelog.com/pt-PT/1.1.0/);
 as versões são as do `Cargo.toml` e as etiquetas do repositório (`vX.Y.Z`).
 
+## 1.0.1 — 2026-09-19
+
+Correcção do import de arrays JSON e dos estados que a §4/§5 do desenho prometia
+e a 1.0.0 não cumpria. O formato em disco não muda: nem o envelope
+(`{schema, todos, trash}`), nem o `db.json` de topo.
+
+### Corrigido
+
+- **Import de um array JSON**: um array passa a ser lido **registo a registo**,
+  pelo formato de cada um. Um registo do formato novo (com algum de `id`,
+  `priority`, `created_at`, `completed_at`, `due_at`) era lido como registo do
+  `rtodo`: `priority` e `created_at` perdiam-se em silêncio, o `id` era
+  substituído por um novo e importar o mesmo ficheiro duas vezes duplicava
+  tudo. Agora é lido como tarefa, com a mesma validade do envelope, o `id` que
+  lá estiver é preservado e o import continua a não duplicar. Os registos do
+  `rtodo` (sem nenhum desses campos) continuam a ler-se como antes e os dois
+  formatos podem conviver no mesmo ficheiro. Alcance medido: **nenhuma base em
+  uso estava afectada** — esta versão nunca escreveu arrays sem envelope e
+  recusa arrancar com um; o defeito exigia um ficheiro feito à mão ou um
+  `jq '.todos' db.json`. O `README.md` passa a descrever a regra real.
+- Vista do **lixo vazio**: tinha o corpo e o rodapé dos «sem resultados» (nomeava
+  um filtro inactivo e anunciava uma tecla que não existe nessa vista) e a barra
+  de ajuda oferecia `c esvaziar o lixo` com o lixo vazio. Ganha estado próprio,
+  com precedência sobre os vazios da lista, e o rótulo da coluna `removida`
+  deixa de aparecer quando não há coluna.
+- **Mensagens de acção expiram**: o loop lia eventos em bloqueio
+  (`event::read()`), logo não havia relógio nenhum e a linha 22 ficava com a
+  última mensagem para sempre. Passam a expirar aos 3 s; o undo e o aviso de
+  transbordo ficam, como a §4 exige.
+- `a` (criar tarefa) passa a **seleccionar a tarefa nova**, em vez de deixar a
+  selecção onde estava.
+
+### Notas
+
+- Divergências conhecidas, pré-existentes e não corrigidas aqui: o aviso de
+  transbordo não é desenhado a vermelho (a §4 pede-o) e a mensagem da guarda do
+  `c` expira aos 3 s enquanto a guarda dura 5 s.
+
 ## 1.0.0 — 2026-09-18
 
 Primeira versão. **Reescrita de raiz do `rtodo`** (a CLI antiga, em
