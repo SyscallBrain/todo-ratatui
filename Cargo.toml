@@ -1,6 +1,6 @@
 [package]
 name = "todo_ratatui"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 # MSRV = máximo dos MSRV do conjunto de deps (ratatui 0.30.2, crossterm 0.29,
 # chrono 0.4, serde 1), medido com `cargo tree` pelo researcher. Não é o 1.85

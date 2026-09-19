@@ -75,6 +75,16 @@ pub enum Action {
     /// `?` — abrir a ajuda (fecha-se com `?`, `Esc` ou `q`, que o mapa da ajuda
     /// traduz em [`Action::InputCancel`]).
     Help,
+    /// `T` — abrir a caixa de temas (§Decisão 9 do ADR). Só na lista: o mapa do
+    /// lixo não tem `T`, para a caixa não se abrir por cima da vista do lixo.
+    ThemeView,
+    /// `j`/`k`/`↓`/`↑` na caixa de temas: mover o cursor, que já traz a
+    /// pré-visualização (o delta é `+1`/`-1`, como na lista).
+    ThemeMove(isize),
+    /// `Enter` na caixa de temas — gravar a preferência e fechar.
+    ThemeConfirm,
+    /// `Esc` (ou `q`) na caixa de temas — repor o tema de entrada e fechar.
+    ThemeCancel,
     /// Numa linha de texto: a tecla crua vai para o buffer.
     Input(KeyEvent),
     /// `Enter` — confirmar a linha de texto.
@@ -108,6 +118,9 @@ pub enum InputMode {
     Export,
     /// `?` — ajuda sobreposta (só `?`, `q` e `Esc` fazem algo).
     Help,
+    /// `T` — caixa de temas sobreposta: só as teclas da caixa fazem algo
+    /// (`j`/`k`/`↓`/`↑`, `Enter`, `Esc`, `q` e o `Ctrl+C` de todos os modos).
+    Theme,
     /// `L` — vista do lixo: as teclas da lista não valem aqui.
     Trash,
 }
@@ -134,6 +147,7 @@ impl InputMode {
             Self::Import => "Importar",
             Self::Export => "Exportar",
             Self::Help => "Ajuda",
+            Self::Theme => "Tema",
             Self::Trash => "Lixo",
         }
     }
@@ -146,7 +160,7 @@ impl InputMode {
             Self::Search => "Buscar…",
             Self::Import => "Caminho do ficheiro a importar…",
             Self::Export => "Caminho do ficheiro a exportar…",
-            Self::Normal | Self::Help | Self::Trash => "",
+            Self::Normal | Self::Help | Self::Theme | Self::Trash => "",
         }
     }
 }
@@ -178,6 +192,7 @@ pub fn map_key(mode: &InputMode, key: KeyEvent) -> Action {
 
     match mode {
         InputMode::Help => map_help(key),
+        InputMode::Theme => map_theme(key),
         InputMode::Trash => map_trash(key),
         // `Normal` — e mais nada, porque os modos de texto saíram acima.
         _ => map_normal(key),
@@ -218,6 +233,10 @@ fn map_normal(key: KeyEvent) -> Action {
         KeyCode::Char('i') => Action::ImportStart,
         KeyCode::Char('x') => Action::ExportStart,
         KeyCode::Char('L') => Action::TrashView,
+        // `T` maiúsculo está livre (`t` minúsculo é `ToggleAll`): é a tecla da
+        // caixa de temas (§Decisão 9). As maiúsculas são distintas de propósito
+        // neste mapa — a mesma regra que separa `g`/`G`.
+        KeyCode::Char('T') => Action::ThemeView,
         KeyCode::Char('?') => Action::Help,
         // `Esc` em repouso limpa a busca e o filtro — **não** sai. Sair é só `q`
         // ou `Ctrl+C`: depois de um `d`, o reflexo de carregar em `Esc` não pode
@@ -249,6 +268,31 @@ fn map_trash(key: KeyEvent) -> Action {
         // no mapa do lixo: `u` significaria «restaurar o selecionado» e é assim
         // que se perde um item por engano. Sair daqui é `Esc` e depois `q`, ou
         // `Ctrl+C` — que o mapa acima trata em qualquer modo.
+        _ => Action::Ignore,
+    }
+}
+
+/// Mapa da caixa de temas (§Decisão 9): navegar com pré-visualização (`j`/`k` e
+/// as setas), `Enter` grava, `Esc`/`q` fecham sem gravar.
+///
+/// É um mapa próprio, como o da ajuda: com a caixa aberta, nada do modo normal
+/// vale — nem `a`, nem `e`, nem `d`, nem `/`, nem o `T` outra vez. A lista fica
+/// por baixo, à vista, e uma tecla que ali significa «remover» não pode agir
+/// sobre ela através da caixa.
+fn map_theme(key: KeyEvent) -> Action {
+    if ctrl(key) {
+        // Só o `Ctrl+C` acima tem significado; qualquer outro `Ctrl+…` não faz
+        // nada aqui (é a mesma regra do mapa da ajuda e do lixo).
+        return Action::Ignore;
+    }
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Action::ThemeMove(1),
+        KeyCode::Char('k') | KeyCode::Up => Action::ThemeMove(-1),
+        KeyCode::Enter => Action::ThemeConfirm,
+        // `q` é «fechar sem gravar»: o `q` de sair da aplicação não vale aqui,
+        // senão o reflexo de fechar a caixa saía do programa a meio de uma
+        // escolha. Para sair, `Ctrl+C` (ou `Esc` e depois `q`).
+        KeyCode::Esc | KeyCode::Char('q') => Action::ThemeCancel,
         _ => Action::Ignore,
     }
 }
@@ -349,6 +393,7 @@ mod tests {
             InputMode::Import,
             InputMode::Export,
             InputMode::Help,
+            InputMode::Theme,
             InputMode::Trash,
         ] {
             assert_eq!(
@@ -414,6 +459,82 @@ mod tests {
                 acao(InputMode::Help, press(KeyCode::Char(c))),
                 Action::Ignore,
                 "«{c}» não faz nada com a ajuda aberta"
+            );
+        }
+    }
+
+    /// Critério 1 do cartão T5: a tecla nova existe, não colide com nenhuma da
+    /// tabela do modo normal, e o `t` minúsculo continua a alternar todas.
+    #[test]
+    fn t_maiusculo_abre_a_caixa_e_nao_colide_com_a_tabela() {
+        assert_eq!(atalho('T'), Action::ThemeView);
+        assert_eq!(
+            atalho('t'),
+            Action::ToggleAll,
+            "`t` minúsculo continua a alternar todas"
+        );
+
+        // Percorre a tabela toda: só o `T` maiúsculo vale `ThemeView`.
+        let mut teclas: Vec<char> = ('a'..='z')
+            .chain('A'..='Z')
+            .chain('0'..='9')
+            .filter(|c| *c != 'T')
+            .collect();
+        teclas.extend([
+            '/', '?', ' ', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '=', '+',
+            '[', ']', '{', '}', '\\', '|', '\'', '"', '`', '~', '<', '>', ',', '.', ';', ':',
+        ]);
+        for c in teclas {
+            assert_ne!(
+                atalho(c),
+                Action::ThemeView,
+                "«{c}» não pode abrir a caixa de temas"
+            );
+        }
+        for code in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::Tab,
+            KeyCode::F(1),
+        ] {
+            assert_ne!(
+                acao(InputMode::Normal, press(code)),
+                Action::ThemeView,
+                "{code:?} não abre a caixa de temas"
+            );
+        }
+    }
+
+    #[test]
+    fn caixa_de_temas_tem_mapa_proprio() {
+        let esperado = [
+            (KeyCode::Char('j'), Action::ThemeMove(1)),
+            (KeyCode::Down, Action::ThemeMove(1)),
+            (KeyCode::Char('k'), Action::ThemeMove(-1)),
+            (KeyCode::Up, Action::ThemeMove(-1)),
+            (KeyCode::Enter, Action::ThemeConfirm),
+            (KeyCode::Esc, Action::ThemeCancel),
+            (KeyCode::Char('q'), Action::ThemeCancel),
+        ];
+        for (code, esperada) in esperado {
+            assert_eq!(acao(InputMode::Theme, press(code)), esperada, "{code:?}");
+        }
+        // Nada do modo normal atravessa a caixa — `d` sobretudo: a lista está
+        // à vista por baixo da sobreposição.
+        for c in [
+            'a', 'e', 'd', 'u', 't', 'c', 's', 'f', 'i', 'x', 'L', 'T', '?', 'g', 'G', '1', ' ',
+            '/', 'z',
+        ] {
+            assert_eq!(
+                acao(InputMode::Theme, press(KeyCode::Char(c))),
+                Action::Ignore,
+                "«{c}» não vale com a caixa aberta"
             );
         }
     }

@@ -15,12 +15,13 @@
 use std::env;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
+use super::atomic;
 use super::model::Todo;
 
 /// Versão do formato em disco. O lixo (`trash`) entrou no schema 2.
@@ -202,11 +203,12 @@ pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf, StoreError> {
 ///
 /// Existe como função livre porque há quem precise de o nomear **sem** ter um
 /// [`Store`] aberto: é o caso da mensagem de recusa de arranque em `main.rs`,
-/// que corre precisamente quando a abertura falhou. A convenção do nome fica
-/// num só sítio — [`Store::backup_path`] usa esta função.
+/// que corre precisamente quando a abertura falhou. A convenção do nome vive
+/// em [`atomic::backup_path_for`], que é quem efectivamente roda o ficheiro —
+/// [`Store::backup_path`] e esta função usam-na, para não haver duas regras.
 #[must_use]
 pub fn backup_path_for(path: &Path) -> PathBuf {
-    path.with_file_name(format!("{DB_FILE_NAME}.bak"))
+    atomic::backup_path_for(path)
 }
 
 /// Base de dados aberta em memória e ligada a um ficheiro.
@@ -303,16 +305,14 @@ impl Store {
             .with_file_name(format!("{DB_FILE_NAME}.pre-restore"))
     }
 
-    fn tmp_path(&self) -> PathBuf {
-        self.path.with_file_name(format!("{DB_FILE_NAME}.tmp"))
-    }
-
-    /// Grava a base de dados em memória: `tmp` + `fsync` + rotação do `.bak` +
-    /// `rename`.
+    /// Grava a base de dados em memória.
     ///
-    /// O `rename` é atómico: ou o ficheiro fica inteiro e novo, ou fica o
-    /// antigo. O `.bak` é a geração anterior, para corrupção/schema — não é
-    /// mecanismo de undo (esse é o `trash`).
+    /// A escrita é a partilhada com o `config` ([`atomic::write_atomic`]): o
+    /// temporário no mesmo directório é escrito por inteiro e sincronizado, a
+    /// geração anterior é rodada para o `.bak` e o temporário ocupa o lugar do
+    /// destino — sempre por `rename`, logo ou o ficheiro fica inteiro e novo,
+    /// ou fica o antigo. O `.bak` é a geração anterior, para corrupção/schema —
+    /// não é mecanismo de undo (esse é o `trash`).
     pub fn save(&self) -> Result<(), StoreError> {
         let mut json = serde_json::to_vec_pretty(&self.db).map_err(|source| StoreError::Json {
             path: self.path.clone(),
@@ -322,40 +322,15 @@ impl Store {
 
         let parent = self.path.parent().filter(|p| !p.as_os_str().is_empty());
         if let Some(dir) = parent {
-            fs::create_dir_all(dir).map_err(|source| StoreError::Io {
+            // `0700` quando é o programa a criar o directório dos dados; um que
+            // já exista fica como está (ADR §Decisão 4).
+            atomic::criar_directorio_privado(dir).map_err(|source| StoreError::Io {
                 path: dir.to_path_buf(),
                 source,
             })?;
         }
 
-        let tmp = self.tmp_path();
-        {
-            let mut file = File::create(&tmp).map_err(|source| StoreError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-            file.write_all(&json).map_err(|source| StoreError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-            file.sync_all().map_err(|source| StoreError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-        }
-
-        // Rotação antes do rename final: o `.bak` fica com a geração anterior
-        // e nunca há um instante em que o `.bak` esteja meio-escrito (é sempre
-        // o resultado de um `rename`, não de uma cópia).
-        if self.path.is_file() {
-            let bak = self.backup_path();
-            fs::rename(&self.path, &bak).map_err(|source| StoreError::Io {
-                path: bak.clone(),
-                source,
-            })?;
-        }
-
-        fs::rename(&tmp, &self.path).map_err(|source| StoreError::Io {
+        atomic::write_atomic(&self.path, &json).map_err(|source| StoreError::Io {
             path: self.path.clone(),
             source,
         })?;
@@ -395,7 +370,26 @@ impl Store {
         }
         let pre_restore = self.pre_restore_path();
         if self.path.is_file() {
-            fs::copy(&self.path, &pre_restore).map_err(|source| StoreError::Io {
+            // Pelo helper de `atomic`, e não por `fs::copy`: o `copy` é o
+            // `O_CREAT|O_TRUNC` de sempre — segue um symlink plantado num
+            // caminho que aqui é **fixo e previsível**, e deixa o modo ao
+            // `umask` (os achados SA-02/SA-03). O conteúdo passa a ir pelo
+            // descritor que o `create_new` abriu, com `sync_all` antes de o
+            // `.bak` ocupar o lugar do `db.json`.
+            let mut origem = File::open(&self.path).map_err(|source| StoreError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+            let mut destino =
+                atomic::criar_privado(&pre_restore).map_err(|source| StoreError::Io {
+                    path: pre_restore.clone(),
+                    source,
+                })?;
+            io::copy(&mut origem, &mut destino).map_err(|source| StoreError::Io {
+                path: pre_restore.clone(),
+                source,
+            })?;
+            destino.sync_all().map_err(|source| StoreError::Io {
                 path: pre_restore.clone(),
                 source,
             })?;
@@ -425,6 +419,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::core::model::Priority;
+    use std::os::unix::fs::PermissionsExt;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!(
@@ -637,5 +632,51 @@ mod tests {
         assert_eq!(recarregado.db().trash.len(), 1);
         assert_eq!(recarregado.db().trash[0].index, 3);
         assert_eq!(recarregado.db().trash[0].todo.id, todo.id);
+    }
+
+    // ------------------------------------------------------------- SA-02/03
+
+    /// Os bits de permissão do caminho, sem o tipo (`0o600`, `0o700`, …).
+    fn modo(path: &Path) -> u32 {
+        fs::metadata(path).expect("metadados").permissions().mode() & 0o777
+    }
+
+    /// A gravação é o sítio onde o programa cria o directório dos dados, o
+    /// `db.json`, o `.bak` e o pré-restore: todos nascem privados. O `.bak` é o
+    /// caso que o `mode(0o600)` do temporário **não** fechava, porque o
+    /// `rename` lhe dá o modo do ficheiro rodado — o `db.json` é posto a `664`
+    /// antes da segunda gravação (a instalação da v1.0.1 com `umask 0002`) para
+    /// que seja mesmo o `set_permissions` do `.bak` a fazer o trabalho.
+    #[test]
+    fn gravacao_cria_o_directorio_e_os_ficheiros_privados() {
+        let base = temp_dir("privado");
+        // O directório da aplicação ainda não existe: quem o cria é a primeira
+        // gravação.
+        let dir = base.join("todo-ratatui");
+        let path = dir.join(DB_FILE_NAME);
+        let mut store = Store::open(&path).expect("abrir");
+
+        let mut db = Db::empty();
+        db.todos
+            .push(crate::core::model::Todo::try_new("privada").unwrap());
+        store.save_db(db).expect("primeira gravação");
+        assert_eq!(modo(&dir), 0o700, "o directório criado pelo programa");
+        assert_eq!(modo(&path), 0o600, "o db.json");
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o664)).expect("modo antigo");
+        let mut db = store.db().clone();
+        db.todos
+            .push(crate::core::model::Todo::try_new("segunda").unwrap());
+        store.save_db(db).expect("segunda gravação");
+        assert_eq!(
+            modo(&store.backup_path()),
+            0o600,
+            "o .bak rotado herdou os 664 do db.json que rodou"
+        );
+        assert_eq!(modo(&path), 0o600, "o db.json volta a nascer privado");
+
+        let pre_restore = store.restore_backup().expect("restaurar");
+        assert_eq!(modo(&pre_restore), 0o600, "o estado anterior ao restore");
+        assert_eq!(modo(&path), 0o600, "o destino depois do restore");
     }
 }

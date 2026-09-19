@@ -37,8 +37,9 @@ use unicode_width::UnicodeWidthStr;
 
 use todo_ratatui::core::{Priority, SortKey, Store, TRASH_LIMIT, Todo, TodoId, Trashed};
 use todo_ratatui::tui::app::UNDO_HINT;
+use todo_ratatui::tui::theme::SLUG_CLASSICO;
 use todo_ratatui::tui::ui::ui;
-use todo_ratatui::tui::{App, InputMode, Status};
+use todo_ratatui::tui::{App, InputMode, Status, Theme};
 
 // ------------------------------------------------------------------ os dados
 
@@ -601,7 +602,10 @@ fn frame_6_erro() {
         "a linha 22 tem 79 colunas úteis: {linha}"
     );
     let estilo = ecra.estilo(0, 22);
-    assert_eq!(estilo.fg, Some(Color::Red), "o erro é vermelho");
+    assert_eq!(
+        estilo.fg, app.theme.err.fg,
+        "o erro usa o papel `err` do tema (e o prefixo «Erro:» é o sinal que não depende da cor)"
+    );
     assert!(
         estilo.add_modifier.contains(Modifier::BOLD),
         "e o prefixo «Erro:» é o sinal que não depende da cor"
@@ -622,6 +626,51 @@ fn frame_7_ajuda() {
         "a caixa limpa o interior: a lista não aparece por baixo"
     );
     assert!(ecra.linhas[4].contains("╭── ajuda ") && ecra.linhas[18].contains("╰──"));
+}
+
+/// A caixa da ajuda ganhou o `T` (§T.6) **sem crescer**: a linha entrou na
+/// coluna das tarefas, entre `L ver o lixo` e `i importar · x exportar`, e o
+/// espaçador que separava as teclas de ficheiro da linha de saída saiu.
+#[test]
+fn a_ajuda_lista_a_tecla_do_tema() {
+    let (_caminho, mut app) = app_da_lista("ajuda-tema");
+    carrega(&mut app, '?');
+    assert_eq!(app.mode, InputMode::Help);
+
+    // O mesmo golden do frame 7, linha a linha: a caixa da ajuda é uma só, e a
+    // linha nova tem de estar no sítio que o `@designer` desenhou.
+    let ecra = assert_frame("80x24-7-ajuda", &app, 80, 24);
+
+    assert!(
+        ecra.linhas[14].contains("L  ver o lixo") && ecra.linhas[15].contains("T  tema"),
+        "o `T` entra a seguir ao `L`:\n{}\n{}",
+        ecra.linhas[14],
+        ecra.linhas[15]
+    );
+    assert!(
+        ecra.linhas[16].contains("i  importar · x  exportar"),
+        "e as teclas de ficheiro vêm logo depois, sem espaçador pelo meio: {}",
+        ecra.linhas[16]
+    );
+    // As duas teclas de vista e as de ficheiro alinham na coluna da direita da
+    // caixa (coluna 26 da caixa, 36 do ecrã).
+    for (linha, tecla) in [(14usize, 'L'), (15, 'T'), (16, 'i')] {
+        assert_eq!(
+            ecra.linhas[linha].chars().nth(36),
+            Some(tecla),
+            "coluna da direita: {}",
+            ecra.linhas[linha]
+        );
+    }
+    assert!(
+        ecra.linhas[17].contains("Esc  fechar a ajuda") && ecra.linhas[17].contains("q  sair"),
+        "a linha de saída continua a ser a última da caixa: {}",
+        ecra.linhas[17]
+    );
+    assert_eq!(
+        ecra.linhas[23], "? ou Esc fecha a ajuda",
+        "a barra da linha 24 da ajuda não mudou com a linha nova"
+    );
 }
 
 /// Base vazia: não é uma lista em branco — diz o que se passa e a tecla que
@@ -815,6 +864,113 @@ fn frame_13_lixo_vazio() {
     assert_eq!(ecra.linhas[23], "Esc volta à lista  ? ajuda");
 }
 
+/// Caixa de temas (§T.5): o mesmo rectângulo da ajuda, com o cursor e o `em uso`
+/// no tema em uso, a amostra das três linhas de tarefa e a linha do modo de cor.
+///
+/// O estado é o que se vê **logo a seguir ao `T`** (§T.8, decisão 12): o cursor
+/// abre no tema aplicado — o Tokyo Night do arranque — e é por isso que `▶` e
+/// `em uso` estão na mesma linha. O estado depois de navegar tem a mesma grelha
+/// (medido pelo `@designer`); o que muda são as cores e as duas marcas.
+#[test]
+fn frame_14_temas() {
+    let (_caminho, mut app) = app_da_lista("temas");
+    carrega(&mut app, 'T');
+    assert_eq!(app.mode, InputMode::Theme);
+
+    let ecra = assert_frame("80x24-14-temas", &app, 80, 24);
+
+    // A caixa é a da ajuda — mesmo sítio, mesma medida — e limpa o interior: a
+    // lista não aparece por baixo das linhas em branco.
+    assert!(
+        ecra.linhas[4].contains("╭── tema ") && ecra.linhas[6].contains("│ Temas"),
+        "a moldura e o título da secção: {}",
+        ecra.linhas[4]
+    );
+    // A lista continua visível fora da caixa; dentro das paredes, o que se lê é
+    // a caixa — nada da lista passa por baixo.
+    let interior: String = ecra.linhas[11].chars().skip(11).take(58).collect();
+    assert!(
+        interior.trim().is_empty(),
+        "a caixa limpa a lista por baixo: «{interior}»"
+    );
+
+    // Os quatro nomes do catálogo, na ordem do catálogo, com o `▶` no cursor.
+    for (linha, nome) in [
+        (7usize, "▶ Tokyo Night"),
+        (8, "Tokyo Night Storm"),
+        (9, "Tokyo Night Moon"),
+        (10, "Clássico (ANSI)"),
+    ] {
+        assert!(
+            ecra.linhas[linha].contains(nome),
+            "linha {linha}: esperava «{nome}» em {}",
+            ecra.linhas[linha]
+        );
+    }
+    assert!(
+        ecra.linhas[7].contains("em uso"),
+        "o cursor abre no tema em uso: {}",
+        ecra.linhas[7]
+    );
+    assert!(
+        !ecra.linhas[8].contains("em uso"),
+        "e o `em uso` é uma marca, não a cor da linha: {}",
+        ecra.linhas[8]
+    );
+
+    // A régua diz o slug do que está a ser pré-visualizado (é a única linha onde
+    // ele aparece) e o modo de cor está na última linha interior.
+    assert!(
+        ecra.linhas[12].contains("─ amostra · tokyo-night "),
+        "{}",
+        ecra.linhas[12]
+    );
+    assert!(
+        ecra.linhas[17].starts_with("          │ modo de cor: rgb"),
+        "{}",
+        ecra.linhas[17]
+    );
+
+    // A amostra usa a matemática da lista reduzida à largura da caixa: a barra
+    // invertida vai da coluna 12 à 67 (o interior todo), e é a única barra.
+    for x in [12u16, 40, 67] {
+        assert!(
+            ecra.estilo(x, 13).add_modifier.contains(Modifier::REVERSED),
+            "coluna {x} da linha de amostra selecionada"
+        );
+    }
+    for y in [12u16, 14, 15] {
+        assert!(
+            !ecra.estilo(40, y).add_modifier.contains(Modifier::REVERSED),
+            "linha {y}: a barra é só da linha do `▶`"
+        );
+    }
+    assert_eq!(
+        ecra.estilo(14, 15).fg,
+        app.theme.done.fg,
+        "o `[x]` da amostra usa o papel `done` (colunas da lista: o `[x] ` em 2)"
+    );
+    assert!(
+        ecra.estilo(20, 15)
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT),
+        "e o título da concluída é riscado"
+    );
+    assert_eq!(
+        ecra.estilo(18, 14).fg,
+        app.theme.high.fg,
+        "o `H` da amostra usa o papel `high` (a marca fica na coluna 6)"
+    );
+
+    // A caixa tem barra própria (linha 24 do frame): as teclas da lista não valem
+    // dentro dela, e a barra não é um modo de texto (sem cursor do terminal).
+    assert_eq!(ecra.linhas[23], "Esc volta ao tema de entrada");
+    assert!(
+        !ecra.cursor_visivel(),
+        "a caixa não pede cursor: não há linha de texto aberta"
+    );
+}
+
 /// Painel de detalhe: só existe a partir de 96×28 (o corte é medido em colunas
 /// × linhas, não em pixéis).
 #[test]
@@ -854,7 +1010,7 @@ fn frame_120x32_detalhe() {
 // ------------------------------------------------------- regras de desenho
 
 #[test]
-fn os_quatorze_goldens_estao_no_repo() {
+fn os_quinze_goldens_estao_no_repo() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("frames");
@@ -879,6 +1035,7 @@ fn os_quatorze_goldens_estao_no_repo() {
             "80x24-11-lixo-armado.txt",
             "80x24-12-lixo-transbordo.txt",
             "80x24-13-lixo-vazio.txt",
+            "80x24-14-temas.txt",
             "80x24-2-busca-filtro.txt",
             "80x24-3-adicionar.txt",
             "80x24-4-adicionar-vazio.txt",
@@ -888,7 +1045,7 @@ fn os_quatorze_goldens_estao_no_repo() {
             "80x24-8-vazio.txt",
             "80x24-9-sem-resultados.txt",
         ],
-        "os 14 goldens fazem parte do repositório e cada um tem o seu teste"
+        "os 15 goldens fazem parte do repositório e cada um tem o seu teste"
     );
 }
 
@@ -1036,16 +1193,22 @@ fn a_linha_selecionada_e_uma_barra_invertida_solida() {
         );
     }
 
-    // §1: só o `H` puxa a cor da prioridade; a concluída é `[x]` verde com o
-    // título riscado; a régua é `Indexed(8)` (e não pinta texto nenhum).
+    // §1: só o `H` puxa a cor da prioridade; a concluída é `[x]` com a cor do
+    // papel `done` e o título riscado; a régua é a do papel `rule` (e não pinta
+    // texto nenhum).
+    //
+    // As cores afirmam-se pelo **papel do tema**, não por um literal: é o
+    // `App` que traz o tema e é dele que o `ui` desenha, portanto o que aqui se
+    // prende é a ligação papel→célula. Um literal (`Color::Red`) passaria a
+    // mentir no dia em que o tema por omissão mudasse.
     assert_eq!(
         ecra.estilo(6, 3).fg,
-        Some(Color::Red),
+        app.theme.high.fg,
         "o `H` da prioridade alta"
     );
     assert_eq!(
         ecra.estilo(2, 10).fg,
-        Some(Color::Green),
+        app.theme.done.fg,
         "`[x]` da concluída"
     );
     assert!(
@@ -1054,10 +1217,10 @@ fn a_linha_selecionada_e_uma_barra_invertida_solida() {
             .contains(Modifier::CROSSED_OUT),
         "o título da concluída é riscado"
     );
-    assert_eq!(ecra.estilo(0, 1).fg, Some(Color::Indexed(8)), "a régua");
+    assert_eq!(ecra.estilo(0, 1).fg, app.theme.rule.fg, "a régua");
     assert_eq!(
         ecra.estilo(0, 0).fg,
-        Some(Color::Cyan),
+        app.theme.accent.fg,
         "o nome da app é `accent`"
     );
 }
@@ -1225,4 +1388,81 @@ fn a_filtragem_e_a_busca_nao_mentem_no_cabecalho() {
         "{}",
         ecra.linhas[2]
     );
+}
+
+// ------------------------------------------------------------------- fundo (§4)
+
+/// O fundo do tema é pintado **antes** de tudo o resto, e na área toda (§4 do
+/// ADR): é isso que faz os rácios de contraste de §T.3 valerem em qualquer
+/// terminal, e não só naquele em que o desenho foi afinado.
+///
+/// Percorre-se o `Buffer` **célula a célula**, nos dois tamanhos que o plano
+/// fixa: uma célula que escapasse à pintura (uma régua, um canto, a última
+/// coluna) não se vê numa amostra. O `classico` fica de fora desta asserção —
+/// não pinta, de propósito (ver o teste seguinte).
+#[test]
+fn o_fundo_do_tema_cobre_a_area_toda() {
+    let (_caminho, mut app) = app_da_lista("fundo");
+    let bg = app
+        .theme
+        .bg
+        .expect("o tema por omissão pinta o fundo (só o `classico` não pinta)");
+
+    let confere = |app: &App, largura: u16, altura: u16| {
+        let ecra = desenhar(app, largura, altura);
+        let buffer = ecra.terminal.backend().buffer();
+        assert_eq!(
+            (buffer.area.width, buffer.area.height),
+            (largura, altura),
+            "o backend de teste tem o tamanho pedido"
+        );
+        for y in 0..altura {
+            for x in 0..largura {
+                let celula = buffer.cell((x, y)).expect("célula dentro do ecrã");
+                assert_eq!(
+                    celula.style().bg,
+                    Some(bg),
+                    "a célula ({x}, {y}) de {largura}x{altura} ficou sem o fundo do tema"
+                );
+            }
+        }
+    };
+
+    for (largura, altura) in [(80u16, 24u16), (120, 32)] {
+        confere(&app, largura, altura);
+    }
+
+    // A ajuda é o pior caso, e por isso é o terceiro: o `Clear` da caixa repõe
+    // as células a `Reset` **antes** de o texto da caixa ser desenhado, e o
+    // fundo tem de voltar por cima disso — senão só a sobreposição ficava com o
+    // fundo do terminal, no meio de um ecrã pintado.
+    carrega(&mut app, '?');
+    assert_eq!(app.mode, InputMode::Help, "a ajuda abriu");
+    confere(&app, 120, 32);
+}
+
+/// O `classico` **não** pinta fundo: é a equivalência com a v1.0.1, em que o
+/// ecrã respeitava o fundo do terminal (§T.4). Sem esta prova, uma pintura sem
+/// guarda dava-lhe um fundo que a v1.0.1 não tinha — e o tema deixava de ser a
+/// rede de segurança dos terminais sem truecolor (§Decisão 3 do ADR).
+#[test]
+fn o_classico_nao_pinta_o_fundo_do_terminal() {
+    let (_caminho, mut app) = app_da_lista("fundo-classico");
+    app.theme = Theme::por_slug(SLUG_CLASSICO).expect("o `classico` está no catálogo");
+    assert!(app.theme.bg.is_none(), "o `classico` é o tema sem fundo");
+
+    for (largura, altura) in [(80u16, 24u16), (120, 32)] {
+        let ecra = desenhar(&app, largura, altura);
+        let buffer = ecra.terminal.backend().buffer();
+        for y in 0..altura {
+            for x in 0..largura {
+                let celula = buffer.cell((x, y)).expect("célula dentro do ecrã");
+                assert_eq!(
+                    celula.style().bg,
+                    Some(Color::Reset),
+                    "a célula ({x}, {y}) de {largura}x{altura} foi pintada sem o tema o pedir"
+                );
+            }
+        }
+    }
 }

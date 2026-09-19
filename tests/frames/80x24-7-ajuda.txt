@@ -13,8 +13,8 @@ filtro: todas · ordem: prioridade · lixo: 3 (L)                           cria
           │ f  filtrar              t  alternar todas                │          
           │ /  buscar               c  limpar concluídas             │          
           │ Esc  limpar busca       L  ver o lixo                    │          
+          │                         T  tema                          │          
           │                         i  importar · x  exportar        │          
-          │                                                          │          
           │ Esc  fechar a ajuda     q  sair                          │          
           ╰──────────────────────────────────────────────────────────╯          
                                                                                 

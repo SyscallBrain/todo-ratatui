@@ -3,6 +3,113 @@
 O formato segue de perto o [Keep a Changelog](https://keepachangelog.com/pt-PT/1.1.0/);
 as versões são as do `Cargo.toml` e as etiquetas do repositório (`vX.Y.Z`).
 
+## 1.1.0 — 2026-09-19
+
+Temas: o ecrã passa a ser desenhado a partir de uma paleta com nome, escolhida dentro da
+aplicação e guardada como preferência. **O formato dos dados não muda**: o `db.json`
+continua a ser o envelope com `schema: 2`, a v1.0.1 continua a ler o mesmo ficheiro e esta
+versão lê os ficheiros da v1.0.1 sem conversão nenhuma. A preferência vive num ficheiro à
+parte, exactamente para que perdê-la não possa custar uma tarefa.
+
+### Adicionado
+
+- **Quatro temas**, com *slug* canónico (o que se escreve no `--theme` e o que fica no
+  ficheiro): `tokyo-night` (**novo tema por omissão**), `tokyo-night-storm`,
+  `tokyo-night-moon` e `classico` (o que a v1.0.1 desenhava). Os três Tokyo Night pintam o
+  fundo do ecrã (`#1a1b26` no `night`), o que faz os contrastes medidos valerem em qualquer
+  terminal; o `classico` não pinta nada e continua a respeitar o fundo do terminal.
+- **Caixa de temas** (`T`): sobreposta à lista, com pré-visualização ao vivo (`j`/`k` e
+  `↓`/`↑`), `Enter` para gravar e `Esc` (ou `q`) para fechar sem gravar, repondo o tema com
+  que a caixa abriu. Mostra o catálogo (com `▶` na linha do cursor e `em uso` no tema
+  gravado), a régua `─ amostra · <slug> ─`, três linhas de tarefa de amostra no tema
+  pré-visualizado e o modo de cor. A ajuda `?` passa a listar `T  tema`.
+- **A preferência de tema** em `~/.config/todo-ratatui/config.json`
+  (`{"theme": "<slug>"}`), escrita atomicamente (`.tmp` ao lado + `rename`) com rotação da
+  geração anterior para `config.json.bak`. **Apagar o ficheiro volta ao tema por omissão.**
+- **`--theme <slug>` / `TODO_RATATUI_THEME`** — escolhem o tema da sessão. São *overrides*:
+  ganham ao ficheiro de preferências e **não gravam nada**.
+- **`--color <auto|rgb|ansi>` / `TODO_RATATUI_COLOR`** e **`--config <caminho>` /
+  `TODO_RATATUI_CONFIG`** — mais o caminho da preferência. As duas formas de escrever o valor
+  (`--theme x` e `--theme=x`) valem o mesmo.
+- **Detecção de cor**: em `auto` (por omissão) pergunta-se ao terminal. Sem truecolor, os
+  temas que pintam fundo não são rebaixados às cegas — o ecrã usa o `classico` e a
+  preferência guardada **não** é reescrita. `--color rgb` força a paleta RGB, que é a saída
+  quando a detecção mente (um `tmux` sem `Tc`, por exemplo).
+
+### Alterado
+
+- **O ecrã passa a ser desenhado por tema.** As nove cores fixas de `src/tui/ui.rs` passam a
+  ser papéis nomeados de um tema (`src/tui/theme.rs`), e o fundo passa a ser pintado nos
+  temas Tokyo Night. Os *golden files* de **texto** existentes não mudam por causa da cor
+  (que eles não codificam): dos 14 de então, 13 ficam byte a byte iguais e o da ajuda muda
+  (ganha a linha do `T`), mais um frame novo para a caixa de temas.
+- **O tema por omissão deixa de ser «as cores ANSI do terminal»**: passa a ser o
+  `tokyo-night`, uma paleta RGB. Um arranque sem configuração nenhuma muda de aspecto em
+  relação à v1.0.1.
+- `--help` e `README.md` descrevem as opções novas e a caixa de temas; a linha «temas
+  configuráveis» sai do fora de âmbito e a secção **Temas** entra.
+- **O `.bak` passa a acompanhar o nome do ficheiro.** A escrita atómica, extraída para
+  `src/core/atomic.rs`, deriva o backup do destino (como o `config.json` já fazia) em vez do
+  nome fixo `db.json.bak` da v1.0.1: com `--db /x/foo.json` o backup passa a ser
+  `/x/foo.json.bak`. É a mesma geração anterior, num nome que não mente sobre o que lá está.
+  O caminho por omissão não muda: `db.json` continua a dar `db.json.bak`.
+
+### Segurança
+
+Endurecimento a partir de uma auditoria ao código deste ramo (achados **SA-01**, **SA-02**
+e **SA-03**; os SA-04 e SA-05 ficam recusados com motivo, ver as notas). Nada disto mexe no
+formato dos dados: `schema` continua `2` e o `db.json` da v1.0.1 abre sem conversão.
+
+- **Nada do que o programa escreve no `stderr` pode conter caracteres de controlo.** Os
+  avisos de tema e de cor (que nomeiam o valor de `--theme`, `--color` e do `config.json`)
+  e os erros de arranque passam a escrever esses caracteres na forma visível `\u{1b}`.
+  Antes, um valor com uma sequência de escape OSC 52 copiava texto para a área de
+  transferência de quem lesse o aviso no terminal, e um `\n` forjava uma linha a imitar uma
+  mensagem do programa. O texto normal — acentos, `«»`, emoji — sai tal e qual, e o que é
+  *guardado* não é tocado: o saneamento é só na impressão.
+- **Os ficheiros criados nascem privados (`0600`) e os directórios que o programa cria
+  (`~/.local/share/todo-ratatui`, `~/.config/todo-ratatui`) a `0700`** — `db.json`,
+  `config.json`, o `.tmp`, o `.bak`, o `db.json.pre-restore` e o CSV do export (e o `.tmp`
+  dele). Antes ficavam à mercê do `umask` (0644 com o `umask` habitual),
+  legíveis por qualquer utilizador local. O `.bak` precisou de um passo explícito: o
+  `rename` dá-lhe o modo do ficheiro rodado, e o `0600` do temporário não chegava lá. Esse
+  passo é omitido quando o `.bak` é o symlink rodado de um destino que era um link (`--db` a
+  apontar para um symlink): o `chmod` seguiria o link e mudaria o modo de um ficheiro que o
+  programa não criou.
+- **A escrita atómica deixou de seguir um link plantado no temporário.** O `<destino>.tmp`
+  passa a ser criado com `O_EXCL` e `0600`: um symlink ou um hard link posto nesse caminho
+  (derivado do destino, logo previsível) já não redirecciona a escrita — o nome é
+  desligado, nunca atravessado. Um `.tmp` deixado por uma corrida interrompida é removido
+  e a gravação repete-se **uma** vez; sem isso, um temporário órfão bloquearia a gravação
+  para sempre.
+
+### Notas
+
+- Para voltar ao look da v1.0.1: o tema `classico` (`T` e escolher, ou `--theme classico`) ou
+  `--color ansi`. Nenhum dos dois grava a preferência.
+- **Permissões já instaladas: passo manual, opcional.** O programa fecha o que **cria** e
+  não impõe `0700` a um `~/.local/share/todo-ratatui` ou `~/.config/todo-ratatui` que já
+  exista (a partilha com o grupo pode ser uma escolha de quem lá tem os dados). Os
+  ficheiros corrigem-se sozinhos na gravação seguinte; os directórios não:
+  `chmod 700 ~/.local/share/todo-ratatui ~/.config/todo-ratatui`, se os quiseres fechados.
+- **Fórmulas no CSV (SA-04): risco assumido, por escrito.** O CSV exportado é fiel ao que
+  está guardado — um título que comece por `=`/`+`/`-`/`@` **não** é neutralizado, porque
+  o prefixo `'` degradaria o ciclo exportar→importar (`- comprar pão` voltaria
+  `'- comprar pão`). Abrir um CSV de proveniência desconhecida no Excel ou no Calc pede o
+  assistente de importação de texto. Fica registado no `README`.
+- **Caracteres de controlo dentro de um título (SA-05): sem validação nova.** Validar em
+  `Todo::try_new` daria cobertura falsa — o import desserializa a tarefa por serde e não
+  passa por lá. A defesa real é a do `ratatui`, que filtra o que desenha, e fica presa por
+  um teste de invariante (`tests/injecao.rs`) que falha se ela desaparecer.
+- Um `config.json` ilegível ou corrompido **não** impede abrir a lista: avisa no `stderr`,
+  segue com o tema por omissão e **não** toca no ficheiro.
+- Alcance medido da mudança de formato: **nenhuma** base de dados é tocada — `schema`
+  continua `2` e nada foi acrescentado ao `db.json`; um ficheiro da v1.0.1 abre nesta versão
+  sem conversão nem aviso.
+- Divergências conhecidas, pré-existentes e não corrigidas aqui: as da 1.0.1 (o aviso de
+  transbordo do lixo não é desenhado a vermelho e a guarda do `c` dura 5 s com uma mensagem
+  de 3 s).
+
 ## 1.0.1 — 2026-09-19
 
 Correcção do import de arrays JSON e dos estados que a §4/§5 do desenho prometia
