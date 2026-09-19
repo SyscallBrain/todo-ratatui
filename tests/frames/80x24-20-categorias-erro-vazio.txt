@@ -1,0 +1,24 @@
+todo-ratatui                              9 tarefas · 7 pendentes · 2 concluídas
+────────────────────────────────────────────────────────────────────────────────
+filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
+  [ ] H Rever o PR do dashboard axum                 Trabalho             há 2 d
+▶ [ ] H Re╭── categorias ────────────────────────────────────────────╮      hoje
+  [ ] M Re│                                                          │   há 12 d
+  [ ] M Ba│ Categorias                                    1–10 de 13 │    há 9 d
+  [ ] M Es│ ▶ sem categoria                                      (2) │    há 5 d
+  [ ] L Co│   Trabalho                                           (2) │      hoje
+  [ ] L Te│   Casa                                               (1) │    há 3 d
+  [x] M Co│   Café e compras                                     (1) │  ✓ há 3 d
+  [x] L In│   Saúde                                              (0) │ ✓ há 20 d
+          │   TugaTux / blog                                     (1) │          
+          │   Finanças                                           (0) │          
+          │   Formação Rust                                      (1) │          
+          │   Backups do servidor doméstico e do NAS com verif…  (1) │          
+          │   Leituras                                           (0) │          
+          │ Erro: o nome não pode ficar vazio                        │          
+          ╰─ Enter guarda · Esc cancela ─────────────────────────────╯          
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+Nova categoria  ▏Nome da categoria…                                             
+Enter guarda  Esc cancela  Ctrl+C sai                                           

@@ -1,4 +1,4 @@
-//! Testes de render: o ecrã contra os 14 *golden files* do @designer.
+//! Testes de render: o ecrã contra os 26 *golden files* do @designer.
 //!
 //! Os goldens vivem em `tests/frames/*.txt`, **dentro do repositório**: nenhum
 //! teste pode depender do workspace do `@designer`, senão não corre a partir de
@@ -35,7 +35,10 @@ use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use todo_ratatui::core::{Priority, SortKey, Store, TRASH_LIMIT, Todo, TodoId, Trashed};
+use todo_ratatui::core::{
+    Category, CategoryFilter, CategoryId, Priority, SortKey, Store, TRASH_LIMIT, Todo, TodoId,
+    Trashed,
+};
 use todo_ratatui::tui::app::UNDO_HINT;
 use todo_ratatui::tui::theme::SLUG_CLASSICO;
 use todo_ratatui::tui::ui::ui;
@@ -159,7 +162,72 @@ fn construir(linha: &Linha) -> Todo {
 }
 
 fn tarefas_do_frame() -> Vec<Todo> {
+    let mut tarefas = tarefas_sem_categoria();
+    for (todo, categoria) in tarefas.iter_mut().zip(CATEGORIA_DA_TAREFA) {
+        todo.category_id = categoria.map(id_categoria);
+    }
+    tarefas
+}
+
+/// As 9 tarefas do fixture **sem atribuição nenhuma** — o estado de uma base
+/// onde as categorias foram todas eliminadas: o `core` tira a atribuição das
+/// tarefas da lista e do lixo (ADR §4), logo nenhuma referência fica pendurada.
+fn tarefas_sem_categoria() -> Vec<Todo> {
     TAREFAS.iter().map(construir).collect()
+}
+
+/// As 12 categorias do fixture, **pela ordem de inserção** — a mesma tabela do
+/// gerador dos goldens (`mockups/todo-ratatui/gerar-frames.py`).
+///
+/// A 8.ª tem 67 colunas e é ela que prova a truncagem nos três sítios onde o
+/// nome vive (49 na caixa, 14 na coluna da lista, 20 na linha 2), e três delas
+/// não têm tarefa nenhuma — a contagem `(0)` é uma linha como as outras (§C.6).
+const CATEGORIAS: [&str; 12] = [
+    "Trabalho",
+    "Casa",
+    "Café e compras",
+    "Saúde",
+    "TugaTux / blog",
+    "Finanças",
+    "Formação Rust",
+    "Backups do servidor doméstico e do NAS com verificação de checksums",
+    "Leituras",
+    "Projetos do NAS",
+    "Viagens",
+    "Família",
+];
+
+/// A categoria de cada tarefa do [`TAREFAS`], pelo índice de [`CATEGORIAS`]:
+/// duas sem nenhuma — é isso que faz o `—` da coluna (§C.3) e o
+/// `sem categoria (2)` da caixa (`80x24-15-categorias`).
+const CATEGORIA_DA_TAREFA: [Option<usize>; 9] = [
+    Some(0),
+    Some(0),
+    Some(1),
+    Some(7),
+    Some(4),
+    Some(2),
+    Some(6),
+    None,
+    None,
+];
+
+/// O `id` de uma categoria do fixture: numerado e curto, como os das tarefas —
+/// nenhum teste precisa de um `Uuid` para distinguir `c1` de `c12`.
+fn id_categoria(indice: usize) -> CategoryId {
+    CategoryId::from(format!("c{}", indice + 1))
+}
+
+/// As 12 categorias do fixture, pela ordem de inserção — a ordem da caixa (§C.1).
+fn categorias_do_frame() -> Vec<Category> {
+    CATEGORIAS
+        .iter()
+        .enumerate()
+        .map(|(indice, nome)| Category {
+            id: id_categoria(indice),
+            name: (*nome).to_owned(),
+        })
+        .collect()
 }
 
 fn entrada_do_lixo(
@@ -240,17 +308,32 @@ fn base(tag: &str) -> Base {
 
 /// Monta o estado completo e devolve o caminho da base de dados (para as
 /// asserções que falam dele) e o `App`.
+///
+/// As 12 categorias do fixture entram sempre: a coluna da categoria está em
+/// todas as linhas da lista (§C.3), e os frames que não têm uma linha da lista —
+/// os do lixo, os vazios — não mudam por elas existirem.
 fn app_com(
     tag: &str,
     tarefas: Vec<Todo>,
     lixo: Vec<Trashed>,
     selecao: Option<usize>,
 ) -> (PathBuf, App) {
+    app_com_categorias(tag, tarefas, lixo, selecao, categorias_do_frame())
+}
+
+fn app_com_categorias(
+    tag: &str,
+    tarefas: Vec<Todo>,
+    lixo: Vec<Trashed>,
+    selecao: Option<usize>,
+    categorias: Vec<Category>,
+) -> (PathBuf, App) {
     let mut base = base(tag);
     {
         let db = base.store.db_mut();
         db.todos = tarefas;
         db.trash = lixo;
+        db.categories = categorias;
     }
     base.store.save().expect("gravar o fixture");
     let mut app = App::new(base.store);
@@ -258,6 +341,32 @@ fn app_com(
         app.list_state.select(selecao);
     }
     (base.caminho, app)
+}
+
+/// A base de `80x24-16-categorias-vazia`: as 9 tarefas e **nenhuma** categoria
+/// — nem uma atribuição, que é o invariante do `core` depois de as eliminar
+/// todas (ADR §4).
+fn app_sem_categorias(tag: &str) -> (PathBuf, App) {
+    app_com_categorias(
+        tag,
+        tarefas_sem_categoria(),
+        lixo_do_frame(),
+        Some(1),
+        Vec::new(),
+    )
+}
+
+/// A base de `80x24-25-categorias-sem-tarefas`: categorias sem tarefas nenhumas
+/// — a caixa abre na mesma (ADR §7), senão não se criavam categorias antes de
+/// haver tarefas.
+fn app_sem_tarefas(tag: &str) -> (PathBuf, App) {
+    app_com_categorias(
+        tag,
+        Vec::new(),
+        lixo_do_frame(),
+        None,
+        categorias_do_frame(),
+    )
 }
 
 /// O estado de `80x24-1-normal`: as 9 tarefas, o lixo a 3 e a seleção no 2.º.
@@ -279,6 +388,12 @@ fn escreve(app: &mut App, texto: &str) {
 
 fn escapa(app: &mut App) {
     app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+}
+
+/// `Enter` (as teclas do modo de texto não passam pelo `carrega`, que é de
+/// caracteres).
+fn enter(app: &mut App) {
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 }
 
 /// `/` + termo + `Enter`.
@@ -452,9 +567,8 @@ fn frame_1_normal() {
         "pendentes em cima, com a prioridade pela letra"
     );
     assert!(
-        ecra.linhas[4]
-            .starts_with("▶ [ ] H Refactor do módulo de persistência para escrita atómica (t…"),
-        "a linha selecionada é a barra invertida e o título corta com `…`: {}",
+        ecra.linhas[4].starts_with("▶ [ ] H Refactor do módulo de persistência para esc… Trabalho"),
+        "a linha selecionada é a barra invertida, o título corta a 44 (§C.3) e a categoria vem a seguir: {}",
         ecra.linhas[4]
     );
     assert!(
@@ -474,6 +588,44 @@ fn frame_1_normal() {
         ecra.linhas[23],
         "a nova  e editar  Espaço concluir  d remover  u desfazer  / buscar  ? ajuda",
         "a barra de ajuda cabe inteira em 80 colunas"
+    );
+
+    // §C.3: a categoria lê-se **sem abrir a caixa** — é o critério do ADR §9 — e
+    // duas tarefas de categorias diferentes leem-se na coluna `x53..66` das 80
+    // colunas, com `—` em quem não tem nenhuma.
+    for (linha, categoria) in [
+        (3usize, "Trabalho"),
+        (5, "Casa"),
+        (8, "Café e compras"),
+        (9, "Formação Rust"),
+        (10, "—"),
+        (11, "—"),
+    ] {
+        let coluna: String = ecra.linhas[linha]
+            .chars()
+            .skip(53)
+            .take(14)
+            .collect::<String>()
+            .trim_end()
+            .to_owned();
+        assert_eq!(
+            coluna, categoria,
+            "a categoria de «{}» não está em x53: {}",
+            ecra.linhas[linha], coluna
+        );
+    }
+    // O nome de 67 colunas corta com `…` nas 14 da coluna (e o título fica com as
+    // 44 de §C.3 — era 59 antes da coluna existir).
+    assert!(
+        ecra.linhas[6].contains("Backups do se…") && ecra.linhas[6].contains("Backup do vault"),
+        "{}",
+        ecra.linhas[6]
+    );
+    assert!(
+        ecra.linhas[4].contains("Refactor do módulo de persistência para esc…")
+            && ecra.linhas[4].contains("Trabalho"),
+        "o título corta a 44: {}",
+        ecra.linhas[4]
     );
 }
 
@@ -971,6 +1123,309 @@ fn frame_14_temas() {
     );
 }
 
+// ------------------------------------------ caixa de categorias (§C, v1.2)
+
+/// `C` abre a caixa sobreposta: `sem categoria` na 1.ª linha — é o `None`, não
+/// uma categoria —, o `▶` no cursor, a janela `1–10 de 13` e a contagem das
+/// tarefas de cada categoria à direita (§C.1, §C.5).
+#[test]
+fn frame_15_categorias() {
+    let (_caminho, mut app) = app_da_lista("categorias");
+    carrega(&mut app, 'C');
+    assert_eq!(app.mode, InputMode::Category);
+    assert_eq!(app.categoria_cursor, 0, "a caixa abre em `sem categoria`");
+
+    let ecra = assert_frame("80x24-15-categorias", &app, 80, 24);
+
+    // A moldura é a da ajuda e das temas — `Clear` antes de desenhar, por isso a
+    // lista só aparece fora do rectângulo — e a caixa acaba na linha 18: a régua
+    // (21) e a linha de texto (22) ficam livres (§C.4).
+    assert!(
+        ecra.linhas[4].starts_with("▶ [ ] H Re╭── categorias "),
+        "a caixa tapa a lista do meio para dentro: {}",
+        ecra.linhas[4]
+    );
+    assert!(ecra.linhas[18].contains("╰─ a nova · e renomear · d eliminar · Enter atribuir "));
+    assert!(
+        ecra.linhas[2].contains("filtro: todas · ordem: prioridade")
+            && !ecra.linhas[2].contains("categoria:"),
+        "em `todas` o eixo da categoria não se escreve: {}",
+        ecra.linhas[2]
+    );
+    assert_eq!(ecra.linhas[23], "Esc fecha sem atribuir");
+    assert!(
+        !ecra.cursor_visivel(),
+        "a caixa em repouso não é um modo de texto"
+    );
+}
+
+/// A caixa sem uma única categoria: o vazio tem estado próprio e o rodapé
+/// reduz-se ao que continua a fazer alguma coisa (§C.5).
+#[test]
+fn frame_16_categorias_vazia() {
+    let (_caminho, mut app) = app_sem_categorias("categorias-vazia");
+    carrega(&mut app, 'C');
+
+    let ecra = assert_frame("80x24-16-categorias-vazia", &app, 80, 24);
+
+    assert!(ecra.linhas[6].contains("Categorias"));
+    assert!(
+        !ecra.linhas[6].contains(" de "),
+        "uma só entrada não tem janela para anunciar: {}",
+        ecra.linhas[6]
+    );
+    assert!(
+        ecra.linhas[7].contains("▶ sem categoria") && ecra.linhas[7].contains("(9)"),
+        "sem categorias, as 9 tarefas estão sem categoria: {}",
+        ecra.linhas[7]
+    );
+    assert!(ecra.linhas[17].contains("Sem categorias — a cria a primeira"));
+    assert!(
+        ecra.linhas[18].contains("a nova · Enter tirar a atribuição · Esc fechar"),
+        "`e` e `d` não têm categoria para apontar: {}",
+        ecra.linhas[18]
+    );
+}
+
+/// Criar categoria (`a`): a linha de texto fica na 22 — a caixa acaba na 18 e
+/// não a tapa — e a dica diz a regra que explica o erro seguinte (§C.4, §C.5).
+#[test]
+fn frame_17_categorias_nova() {
+    let (_caminho, mut app) = app_da_lista("categorias-nova");
+    carrega(&mut app, 'C');
+    carrega(&mut app, 'a');
+    escreve(&mut app, "Música");
+    assert_eq!(app.mode, InputMode::CategoryName);
+
+    let ecra = assert_frame_mascarado("80x24-17-categorias-nova", &app, 80, 24, &sem_cursor());
+
+    assert_eq!(
+        ecra.linhas[22], "Nova categoria  Música",
+        "o buffer escreve-se fora da caixa"
+    );
+    assert!(ecra.linhas[17].contains("nome único; ignora maiúsculas"));
+    assert!(ecra.linhas[18].contains("Enter guarda · Esc cancela"));
+    assert_eq!(ecra.linhas[23], "Enter guarda  Esc cancela  Ctrl+C sai");
+    assert_eq!(
+        ecra.cursor(),
+        Position::new(22, 22),
+        "o cursor fecha o buffer (14 da etiqueta + 2 + 6 de `Música`)"
+    );
+}
+
+/// Renomear (`e`): o buffer abre com o nome actual e o cursor da caixa fica na
+/// linha que o `Enter` vai gravar (§C.2, §C.5).
+#[test]
+fn frame_18_categorias_renomear() {
+    let (_caminho, mut app) = app_da_lista("categorias-renomear");
+    carrega(&mut app, 'C');
+    carrega(&mut app, 'j');
+    carrega(&mut app, 'e');
+    assert!(app.renomeando_categoria());
+
+    let ecra = assert_frame_mascarado("80x24-18-categorias-renomear", &app, 80, 24, &sem_cursor());
+
+    assert_eq!(ecra.linhas[22], "Renomear  Trabalho");
+    assert!(
+        ecra.linhas[8].contains("▶ Trabalho"),
+        "o cursor não se perde no modo de texto: {}",
+        ecra.linhas[8]
+    );
+    assert!(ecra.linhas[7].contains("  sem categoria"));
+}
+
+/// Erro de nome repetido: as duas coisas ficam visíveis ao mesmo tempo — o
+/// buffer na linha 22 (o que foi escrito não se perde) e o erro na linha de
+/// estado da caixa, que é onde o conflito se vê (§C.4, §C.5).
+#[test]
+fn frame_19_categorias_erro() {
+    let (_caminho, mut app) = app_da_lista("categorias-erro");
+    carrega(&mut app, 'C');
+    carrega(&mut app, 'a');
+    escreve(&mut app, "trabalho");
+    enter(&mut app);
+
+    let ecra = assert_frame_mascarado("80x24-19-categorias-erro", &app, 80, 24, &sem_cursor());
+
+    assert_eq!(
+        ecra.linhas[22], "Nova categoria  trabalho",
+        "o texto escrito não se perde (§C.4)"
+    );
+    assert!(
+        ecra.linhas[17].contains("Erro: já existe uma categoria chamada «trabalho»"),
+        "o erro cita o que o utilizador escreveu: {}",
+        ecra.linhas[17]
+    );
+    assert_eq!(
+        ecra.estilo(12, 17).fg,
+        app.theme.err.fg,
+        "o papel é `err` — e a mensagem diz `Erro:` (nunca só a cor)"
+    );
+}
+
+/// Erro de nome vazio: mesmo sítio, com o marcador de posição ainda na linha 22
+/// (§C.5).
+#[test]
+fn frame_20_categorias_erro_vazio() {
+    let (_caminho, mut app) = app_da_lista("categorias-erro-vazio");
+    carrega(&mut app, 'C');
+    carrega(&mut app, 'a');
+    enter(&mut app);
+
+    let ecra = assert_frame_mascarado(
+        "80x24-20-categorias-erro-vazio",
+        &app,
+        80,
+        24,
+        &sem_cursor(),
+    );
+
+    assert_eq!(ecra.linhas[22], "Nova categoria  Nome da categoria…");
+    assert!(ecra.linhas[17].contains("Erro: o nome não pode ficar vazio"));
+    assert!(
+        !ecra.linhas[17].contains("já existe"),
+        "vazio e repetido distinguem-se pela mensagem, não por nada acontecer"
+    );
+}
+
+/// Guarda armada antes de eliminar (`d` uma vez): a mensagem diz o preço exacto
+/// — quantas tarefas ficam sem categoria — e o rodapé da caixa passa a anunciar
+/// só as duas teclas vivas (§C.2, §C.5).
+#[test]
+fn frame_21_categorias_guarda() {
+    let (_caminho, mut app) = app_da_lista("categorias-guarda");
+    carrega(&mut app, 'C');
+    carrega(&mut app, 'j');
+    carrega(&mut app, 'd');
+    assert_eq!(app.categoria_armada(), Some(&id_categoria(0)));
+
+    let ecra = assert_frame("80x24-21-categorias-guarda", &app, 80, 24);
+
+    assert!(
+        ecra.linhas[17].contains("Eliminar «Trabalho»? 2 tarefas ficam sem categoria"),
+        "{}",
+        ecra.linhas[17]
+    );
+    assert!(ecra.linhas[18].contains("d outra vez confirma · Esc cancela"));
+    assert_eq!(
+        ecra.linhas[23], "c confirmar  Esc cancela",
+        "o mesmo estado do lixo armado, o mesmo desenho"
+    );
+    assert_eq!(
+        ecra.estilo(12, 17).fg,
+        app.theme.high.fg,
+        "o aviso da guarda usa o papel `high`, como o aviso do transbordo"
+    );
+}
+
+/// Fim da lista da caixa (`G`): a janela desloca-se (`4–13 de 13`) e o nome
+/// comprido aparece cortado a 49 colunas dentro da caixa — na lista o mesmo nome
+/// tem 14 (§C.5, §C.6).
+#[test]
+fn frame_22_categorias_fim() {
+    let (_caminho, mut app) = app_da_lista("categorias-fim");
+    // O frame mostra a 8.ª tarefa selecionada (`Configurar tmux`, a primeira das
+    // concluídas) — é ela que dá o `Atribuída: sem categoria` da linha de estado.
+    app.list_state.select(Some(7));
+    carrega(&mut app, 'C');
+    carrega(&mut app, 'G');
+    assert_eq!(app.categoria_cursor, 12, "a última entrada é a 13.ª");
+    // A linha 22 deste frame é anotação do mockup (o gerador escreve lá a
+    // descrição da 2.ª tarefa, como nos frames 2, 5 e 23): o que este frame fixa
+    // é a janela `4–13 de 13`, a truncagem do nome e a linha de estado da caixa.
+    app.status =
+        Status::message("Descrição: ver ADR — tmp ao lado do ficheiro, nunca em /tmp".to_owned());
+
+    let ecra = assert_frame("80x24-22-categorias-fim", &app, 80, 24);
+
+    assert!(ecra.linhas[6].contains("4–13 de 13"), "{}", ecra.linhas[6]);
+    assert!(
+        ecra.linhas[12].contains("Backups do servidor doméstico e do NAS com verif…")
+            && ecra.linhas[12].contains("(1)"),
+        "a truncagem é do nome, nunca da contagem: {}",
+        ecra.linhas[12]
+    );
+    assert!(ecra.linhas[16].contains("▶ Família"));
+    assert!(ecra.linhas[17].contains("Atribuída: sem categoria"));
+}
+
+/// Filtro por categoria (`F` cicla `todas → sem categoria → cada categoria`): o
+/// eixo é próprio e a linha 2 escreve-o — o cabeçalho conta o que sobrou, senão
+/// a lista apareceria vazia sem explicação (§C.3, §C.5).
+#[test]
+fn frame_23_filtro_categoria() {
+    let (_caminho, mut app) = app_da_lista("filtro-categoria");
+    carrega(&mut app, 'F');
+    carrega(&mut app, 'F');
+    assert_eq!(app.category_filter, CategoryFilter::Uma(id_categoria(0)));
+
+    // A linha 22 deste frame é anotação do mockup (o gerador escreve-a à mão,
+    // como nos frames 2 e 5) e a 1.ª visível aparece selecionada: o que este
+    // frame fixa é o eixo na linha 2 e a contagem do cabeçalho.
+    app.list_state.select(Some(0));
+    app.status =
+        Status::message("Descrição: ver ADR — tmp ao lado do ficheiro, nunca em /tmp".to_owned());
+
+    let ecra = assert_frame("80x24-23-filtro-categoria", &app, 80, 24);
+
+    assert!(
+        ecra.linhas[0].contains("2 de 9 tarefas"),
+        "{}",
+        ecra.linhas[0]
+    );
+    assert!(
+        ecra.linhas[2]
+            .contains("filtro: todas · ordem: prioridade · categoria: Trabalho · lixo: 3 (L)"),
+        "{}",
+        ecra.linhas[2]
+    );
+    assert!(
+        ecra.linhas[3].contains("Trabalho") && ecra.linhas[4].contains("Trabalho"),
+        "o filtro deixa passar as duas tarefas de `Trabalho`"
+    );
+}
+
+/// Ordenação por categoria (`s` cicla até ela): grupos pela **ordem de inserção
+/// das categorias** — a mesma da caixa — e as tarefas sem categoria no fim
+/// (§C.5).
+#[test]
+fn frame_24_ordem_categoria() {
+    let (_caminho, mut app) = app_da_lista("ordem-categoria");
+    for _ in 0..3 {
+        carrega(&mut app, 's');
+    }
+    assert_eq!(app.sort, SortKey::Category);
+
+    let ecra = assert_frame("80x24-24-ordem-categoria", &app, 80, 24);
+
+    assert!(ecra.linhas[2].contains("ordem: categoria"));
+    assert!(
+        ecra.linhas[9].contains("Backups do se…") && ecra.linhas[10].contains("—"),
+        "o grupo do 8.º nome vem antes das tarefas sem categoria:\n{}\n{}",
+        ecra.linhas[9],
+        ecra.linhas[10]
+    );
+}
+
+/// A caixa numa base **sem tarefas**: abre na mesma (ADR §7) — senão não se
+/// criavam categorias antes de haver tarefas — e a linha de estado di-lo, em vez
+/// de deixar o `Enter` parecer avariado (§C.5).
+#[test]
+fn frame_25_categorias_sem_tarefas() {
+    let (_caminho, mut app) = app_sem_tarefas("categorias-sem-tarefas");
+    carrega(&mut app, 'C');
+
+    let ecra = assert_frame("80x24-25-categorias-sem-tarefas", &app, 80, 24);
+
+    assert!(ecra.linhas[17].contains("Sem tarefas — não há a quem atribuir"));
+    assert!(ecra.linhas[18].contains("a nova · Enter tirar a atribuição · Esc fechar"));
+    assert!(
+        ecra.linhas[7].contains("▶ sem categoria") && ecra.linhas[7].contains("(0)"),
+        "sem tarefas nenhuma, todas as contagens são zero: {}",
+        ecra.linhas[7]
+    );
+}
+
 /// Painel de detalhe: só existe a partir de 96×28 (o corte é medido em colunas
 /// × linhas, não em pixéis).
 #[test]
@@ -995,9 +1450,14 @@ fn frame_120x32_detalhe() {
     ];
     let ecra = assert_frame_mascarado("120x32-detalhe", &app, 120, 32, &mascaras);
 
-    assert!(ecra.linhas[24].contains("─ selecionada "));
-    assert!(ecra.linhas[25].contains("Título") && ecra.linhas[25].contains("Refactor do módulo"));
-    assert!(ecra.linhas[26].contains("Descrição") && ecra.linhas[26].contains("ver ADR"));
+    assert!(ecra.linhas[23].contains("─ selecionada "));
+    assert!(ecra.linhas[24].contains("Título") && ecra.linhas[24].contains("Refactor do módulo"));
+    assert!(ecra.linhas[25].contains("Descrição") && ecra.linhas[25].contains("ver ADR"));
+    assert!(
+        ecra.linhas[26].contains("Categoria") && ecra.linhas[26].contains("Trabalho"),
+        "a categoria entra entre a descrição e a prioridade, com o nome inteiro: {}",
+        ecra.linhas[26]
+    );
     assert!(
         ecra.linhas[27].contains("Alta (H)") && ecra.linhas[27].contains(&marca),
         "a data de criação aparece formatada: {}",
@@ -1005,16 +1465,25 @@ fn frame_120x32_detalhe() {
     );
     assert!(ecra.linhas[27].contains("concluída —"));
     assert!(ecra.linhas[28].contains("id 2"), "{}", ecra.linhas[28]);
+    // A lista encolheu uma linha por causa da `Categoria` no painel (§C.3): a
+    // 9.ª tarefa é a última visível e a régua «selecionada» desceu para a 23.
+    assert!(
+        ecra.linhas[11].contains("Instalar a FiraCode")
+            && ecra.linhas[12..23].iter().all(String::is_empty),
+        "20 entradas visíveis a 120×32: {}",
+        ecra.linhas[22]
+    );
 }
 
 // ------------------------------------------------------- regras de desenho
 
-#[test]
-fn os_quinze_goldens_estao_no_repo() {
+/// Os nomes dos frames do repositório, sem `.txt`, por ordem — a lista que o
+/// teste dos 26 e o dos testes por frame partilham.
+fn nomes_dos_frames() -> Vec<String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("frames");
-    let mut ficheiros: Vec<String> = fs::read_dir(&dir)
+    let mut nomes: Vec<String> = fs::read_dir(&dir)
         .expect("ler tests/frames")
         .map(|entrada| {
             entrada
@@ -1023,30 +1492,91 @@ fn os_quinze_goldens_estao_no_repo() {
                 .to_string_lossy()
                 .into_owned()
         })
-        .filter(|nome| nome.ends_with(".txt"))
+        .filter_map(|nome| nome.strip_suffix(".txt").map(str::to_owned))
         .collect();
-    ficheiros.sort();
+    nomes.sort();
+    nomes
+}
+
+#[test]
+fn os_vinte_e_seis_goldens_estao_no_repo() {
     assert_eq!(
-        ficheiros,
+        nomes_dos_frames(),
         [
-            "120x32-detalhe.txt",
-            "80x24-1-normal.txt",
-            "80x24-10-lixo.txt",
-            "80x24-11-lixo-armado.txt",
-            "80x24-12-lixo-transbordo.txt",
-            "80x24-13-lixo-vazio.txt",
-            "80x24-14-temas.txt",
-            "80x24-2-busca-filtro.txt",
-            "80x24-3-adicionar.txt",
-            "80x24-4-adicionar-vazio.txt",
-            "80x24-5-undo.txt",
-            "80x24-6-erro.txt",
-            "80x24-7-ajuda.txt",
-            "80x24-8-vazio.txt",
-            "80x24-9-sem-resultados.txt",
+            "120x32-detalhe",
+            "80x24-1-normal",
+            "80x24-10-lixo",
+            "80x24-11-lixo-armado",
+            "80x24-12-lixo-transbordo",
+            "80x24-13-lixo-vazio",
+            "80x24-14-temas",
+            "80x24-15-categorias",
+            "80x24-16-categorias-vazia",
+            "80x24-17-categorias-nova",
+            "80x24-18-categorias-renomear",
+            "80x24-19-categorias-erro",
+            "80x24-2-busca-filtro",
+            "80x24-20-categorias-erro-vazio",
+            "80x24-21-categorias-guarda",
+            "80x24-22-categorias-fim",
+            "80x24-23-filtro-categoria",
+            "80x24-24-ordem-categoria",
+            "80x24-25-categorias-sem-tarefas",
+            "80x24-3-adicionar",
+            "80x24-4-adicionar-vazio",
+            "80x24-5-undo",
+            "80x24-6-erro",
+            "80x24-7-ajuda",
+            "80x24-8-vazio",
+            "80x24-9-sem-resultados",
         ],
-        "os 15 goldens fazem parte do repositório e cada um tem o seu teste"
+        "os 26 goldens fazem parte do repositório (§C.8: 11 novos, 15 da v1.1)"
     );
+}
+
+/// Cada ficheiro de `tests/frames/` tem de estar nomeado por um teste que o
+/// compara: um golden que ninguém compara é documentação, não teste. O nome
+/// aparece nos testes **sem** o `.txt` (é assim que o `assert_frame` o leva), e
+/// é essa a agulha — a lista dos 26 escreve-os com extensão e não conta.
+#[test]
+fn cada_frame_tem_o_seu_teste() {
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut fontes = String::new();
+    for entrada in fs::read_dir(&raiz).expect("ler tests/") {
+        let caminho = entrada.expect("entrada").path();
+        if caminho.extension().is_some_and(|ext| ext == "rs") {
+            fontes.push_str(&fs::read_to_string(&caminho).expect("ler ficheiro de teste"));
+        }
+    }
+    let sem_teste: Vec<String> = nomes_dos_frames()
+        .into_iter()
+        .filter(|nome| !fontes.contains(&format!("\"{nome}\"")))
+        .collect();
+    assert!(
+        sem_teste.is_empty(),
+        "frames sem teste que os compare: {sem_teste:?}"
+    );
+}
+
+/// §C.6: nenhuma linha de nenhum frame fica mais curta do que a largura do ecrã
+/// — é a regressão das 80 colunas. O gerador do `@designer` assere-o ao
+/// escrever os ficheiros; este teste é a mesma asserção sobre a cópia que conta
+/// (`tests/frames/`, dentro do repositório), para não depender de o gerador
+/// correr para se saber que a grelha está inteira.
+#[test]
+fn nenhum_frame_tem_linha_curta() {
+    for nome in nomes_dos_frames() {
+        let largura = if nome.starts_with("120x32") { 120 } else { 80 };
+        let bruto = fs::read_to_string(caminho_do_golden(&nome)).expect("ler golden");
+        for (y, linha) in bruto.lines().enumerate() {
+            assert_eq!(
+                linha.width(),
+                largura,
+                "{nome}, linha {y}: |{linha}| tem {} colunas de {largura}",
+                linha.width()
+            );
+        }
+    }
 }
 
 #[test]

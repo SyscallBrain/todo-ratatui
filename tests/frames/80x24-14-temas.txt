@@ -1,7 +1,7 @@
 todo-ratatui                              9 tarefas · 7 pendentes · 2 concluídas
 ────────────────────────────────────────────────────────────────────────────────
 filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
-  [ ] H Rever o PR do dashboard axum                                      há 2 d
+  [ ] H Rever o PR do dashboard axum                 Trabalho             há 2 d
 ▶ [ ] H Re╭── tema ──────────────────────────────────────────────────╮      hoje
   [ ] M Re│                                                          │   há 12 d
   [ ] M Ba│ Temas                                                    │    há 9 d

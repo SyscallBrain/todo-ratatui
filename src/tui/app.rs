@@ -103,7 +103,11 @@ enum Guarda {
 }
 
 /// Nome cortado para caber numa mensagem de acção da linha 22 (§C.4).
-fn nome_na_mensagem(nome: &str) -> String {
+///
+/// `pub(crate)` porque o desenho também o usa: a linha de estado da caixa diz o
+/// preço da eliminação (`Eliminar «…»? 3 tarefas ficam sem categoria`) e o nome
+/// corta-se da mesma maneira nos dois sítios — a regra do `cortar` é uma só.
+pub(crate) fn nome_na_mensagem(nome: &str) -> String {
     cortar(nome.trim(), NOME_NA_MENSAGEM)
 }
 

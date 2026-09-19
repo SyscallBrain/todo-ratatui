@@ -1,9 +1,10 @@
 //! Desenho do ecrã: do [`App`] para o `Buffer`, sem estado próprio.
 //!
-//! A grelha é a do `@designer` (`design-system/todo-ratatui.md` §2–§4) e os
-//! testes de `tests/render.rs` comparam-na com os 15 *golden files* de
-//! `tests/frames/`, linha a linha. Nada aqui é uma segunda fonte de verdade:
-//! o que a spec fixa (colunas, cortes, barras de ajuda) está aqui uma única vez.
+//! A grelha é a do `@designer` (`design-system/todo-ratatui.md` §2–§4 e §C para
+//! as categorias) e os testes de `tests/render.rs` comparam-na com os 26 *golden
+//! files* de `tests/frames/`, linha a linha. Nada aqui é uma segunda fonte de
+//! verdade: o que a spec fixa (colunas, cortes, barras de ajuda) está aqui uma
+//! única vez.
 //!
 //! Três regras que a spec mediu e que não são estilo:
 //!
@@ -29,9 +30,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::core::{Priority, TRASH_LIMIT, Todo, Trashed};
+use crate::core::{CategoryFilter, CategoryId, Priority, TRASH_LIMIT, Todo, Trashed};
 
-use super::app::{App, Status, UNDO_HINT};
+use super::app::{App, Status, UNDO_HINT, nome_na_mensagem};
 use super::event::InputMode;
 use super::theme::{CATALOGO, ModoCor, Theme};
 
@@ -56,22 +57,49 @@ const ALTURA_PAINEL_MINIMA: u16 = 28;
 const ALTURA_CABECALHO: u16 = 3;
 /// Régua + linha de mensagem + barra de ajuda.
 const ALTURA_RODAPE: u16 = 3;
-/// Régua «selecionada» + 4 linhas de detalhe.
-const ALTURA_PAINEL: u16 = 5;
+/// Régua «selecionada» + 5 linhas de detalhe (§C.3 acrescentou a `Categoria`).
+const ALTURA_PAINEL: u16 = 6;
 /// Coluna da data: `W-12`, alinhada à direita, com uma de folga em `W-13`.
 const RESERVA_DIREITA: u16 = 21;
+/// Coluna da categoria (§C.3): 14 colunas fixas, a acabar uma de folga antes da
+/// data — `x53` a 80 e `x93` a 120.
+const LARGURA_CATEGORIA: usize = 14;
+/// As 12 colunas da data, contadas a partir da direita (`W-12 .. W-1`).
+const LARGURA_DATA: usize = 12;
+/// Título com a coluna da categoria ao lado: `W-36` (44 a 80, 84 a 120) — a
+/// soma `8 (coluna) + 1 + 14 (categoria) + 1 + 12 (data)`.
+const RESERVA_CATEGORIA: u16 = 36;
 /// Título começa em `x = 8`: `▶ ` (2) + `[x] ` (4) + `H ` (2).
 const COLUNA_TITULO: usize = 8;
 /// Coluna do valor no painel de detalhe (`x = 14`; a chave está em `x = 2`).
 const COLUNA_DETALHE: usize = 14;
 /// Termo de busca cortado a 20 colunas na linha 2.
 const LARGURA_BUSCA: usize = 20;
+/// O nome da categoria do filtro cortado às mesmas 20 colunas na linha 2 (§C.3).
+const LARGURA_CATEGORIA_NA_LINHA: usize = 20;
+/// Colunas de ` · busca "…"` e de ` · categoria: …` — os separadores contam
+/// para saber se a linha 2 cabe (§C.3).
+const SEGMENTO_BUSCA: usize = 11;
+const SEGMENTO_CATEGORIA: usize = 14;
+/// Mínimo de um segmento da linha 2 que cede: `x…` — abaixo disto o segmento
+/// não dizia nada e não vale a pena escrevê-lo (§C.3).
+const LARGURA_MINIMA_SEGMENTO: usize = 3;
 const CAIXA_AJUDA: (u16, u16) = (60, 15);
 const COLUNA_AJUDA_ESQ: usize = 2;
 const COLUNA_AJUDA_DIR: usize = 26;
 /// A caixa de temas (§T.5) **é** o rectângulo da ajuda: mesma medida, mesmo
 /// `Clear`, mesma coluna de conteúdo. Não é uma segunda medida a poder divergir.
 const CAIXA_TEMAS: (u16, u16) = CAIXA_AJUDA;
+/// A caixa de categorias (§C.1) é o mesmo rectângulo outra vez: 60×15 em
+/// `(10, 4)` a 80×24 — as linhas 5 a 19 do ecrã —, que é o que deixa a linha 22
+/// livre para a linha de texto de criar/renomear (§C.4).
+const CAIXA_CATEGORIAS: (u16, u16) = CAIXA_AJUDA;
+/// Colunas do nome de uma categoria dentro da caixa (§C.1): uma coluna em branco
+/// separa-o da contagem, que acaba em `x0+57`.
+const NOME_CATEGORIA: usize = 49;
+/// Entradas visíveis de uma vez: 15 linhas − moldura − 1 em branco − cabeçalho −
+/// linha de estado (§C.6). A caixa **não cresce**: é a janela que anda.
+const CATEGORIAS_VISIVEIS: usize = 10;
 /// Coluna onde começa o texto dentro de uma caixa sobreposta — as mesmas duas
 /// colunas da [`COLUNA_AJUDA_ESQ`] (uma parede e um espaço em branco).
 const COLUNA_CAIXA: usize = 2;
@@ -101,6 +129,35 @@ const BARRA_AJUDA: &str = "? ou Esc fecha a ajuda";
 /// lista estão desactivadas enquanto ela está aberta (o modo `Theme` tem mapa
 /// próprio), e o que se pode fazer lá dentro é sair.
 const BARRA_TEMAS: &str = "Esc volta ao tema de entrada";
+/// A barra de ajuda com a caixa de categorias aberta (§C.2): lá dentro nada da
+/// lista vale, e a única tecla que resta sem consequência é o `Esc`.
+const BARRA_CATEGORIAS: &str = "Esc fecha sem atribuir";
+/// A etiqueta da linha 22 no modo de texto de nomes quando o `Enter` **renomeia**
+/// em vez de criar (`80x24-18-categorias-renomear`): o `label()` do modo é um só
+/// para as duas intenções (§C.4).
+const ETIQUETA_RENOMEAR: &str = "Renomear";
+
+// -------------------------------- caixa de categorias: bordas (§C.2, §C.9)
+
+/// As teclas vivas na borda de baixo da caixa de categorias — quatro variantes
+/// medidas (§6), uma por estado vivo: repouso, sem categorias (ou sem tarefas),
+/// guarda armada e modo de texto. A regra é a da §5: o rodapé só anuncia o que
+/// faz alguma coisa neste contexto.
+const TECLAS_CATEGORIAS: &str = " a nova · e renomear · d eliminar · Enter atribuir ";
+const TECLAS_CATEGORIAS_SEM: &str = " a nova · Enter tirar a atribuição · Esc fechar ";
+const TECLAS_CATEGORIAS_GUARDA: &str = " d outra vez confirma · Esc cancela ";
+const TECLAS_CATEGORIAS_TEXTO: &str = " Enter guarda · Esc cancela ";
+
+/// A linha de estado do vazio da caixa (`80x24-16-categorias-vazia`): diz o que
+/// resolve a caixa sem uma única categoria.
+const CAIXA_SEM_CATEGORIAS: &str = "Sem categorias — a cria a primeira";
+/// A linha de estado quando não há a quem atribuir (`80x24-25-categorias-sem-tarefas`):
+/// o `Enter` não tem alvo e é isso que se diz, em vez de o deixar parecer avariado.
+const CAIXA_SEM_TAREFAS: &str = "Sem tarefas — não há a quem atribuir";
+/// A dica do modo de texto de criar/renomear (`80x24-17-categorias-nova`): diz a
+/// regra que explica o erro seguinte (ADR §2 — o nome é único e ignora as
+/// maiúsculas).
+const CAIXA_DICA_DE_TEXTO: &str = "nome único; ignora maiúsculas";
 
 /// Teclas da ajuda: a lista principal (`80x24-7-ajuda`).
 ///
@@ -111,15 +168,15 @@ const BARRA_TEMAS: &str = "Esc volta ao tema de entrada";
 const TECLAS_AJUDA: [(&str, &str); 13] = [
     ("", ""),
     ("Navegação", "Tarefas"),
-    ("j / ↓  seguinte", "a  nova tarefa"),
-    ("k / ↑  anterior", "e  editar título"),
-    ("g / G  topo / fim", "Espaço  concluir"),
-    ("1 2 3  prioridade", "d  remover"),
-    ("s  ordenar", "u  desfazer"),
-    ("f  filtrar", "t  alternar todas"),
+    ("j / k  ↑ ↓  navegar", "a  nova tarefa"),
+    ("g / G  topo / fim", "e  editar título"),
+    ("1 2 3  prioridade", "Espaço  concluir"),
+    ("s  ordenar", "d  remover"),
+    ("f  filtrar estado", "u  desfazer"),
+    ("F  filtrar categoria", "t  alternar todas"),
     ("/  buscar", "c  limpar concluídas"),
     ("Esc  limpar busca", "L  ver o lixo"),
-    ("", "T  tema"),
+    ("", "T  tema · C  categorias"),
     ("", "i  importar · x  exportar"),
     ("Esc  fechar a ajuda", "q  sair"),
 ];
@@ -242,6 +299,12 @@ pub fn ui(frame: &mut Frame, app: &App) {
     if matches!(app.mode, InputMode::Theme) {
         desenha_temas(frame, app, area);
     }
+
+    // A caixa de categorias abre no mesmo sítio e com o mesmo molde — e, no modo
+    // do nome (`a`/`e`), continua a ser ela que está por baixo da linha 22.
+    if matches!(app.mode, InputMode::Category | InputMode::CategoryName) {
+        desenha_categorias(frame, app, area);
+    }
 }
 
 // ------------------------------------------------------------------ cabeçalho
@@ -291,17 +354,61 @@ fn linha_de_estado(app: &App, largura: u16) -> Line<'static> {
         );
     }
 
-    let mut spans = vec![Span::raw(format!(
+    let fixo = Span::raw(format!(
         "filtro: {} · ordem: {}",
         app.filter.label(),
         app.sort.label()
-    ))];
-    if !app.query.is_empty() {
-        spans.push(Span::raw(format!(
-            " · busca \"{}\"",
-            cortar(&app.query, LARGURA_BUSCA)
-        )));
+    ));
+    let largura_fixo = fixo.width();
+    let mut spans = vec![fixo];
+    // §C.3: o eixo da categoria só aparece quando **restringe**, como o da
+    // busca. Em `todas` não esconde nada e não tem nada a explicar (§4) — e é
+    // isso que deixa a linha 2 dos 15 frames da v1.1 byte a byte igual.
+    let mut busca = (!app.query.is_empty()).then(|| cortar(&app.query, LARGURA_BUSCA));
+    let mut categoria = nome_da_categoria_filtrada(app);
+    if let Some(nome) = categoria.as_mut() {
+        *nome = cortar(nome, LARGURA_CATEGORIA_NA_LINHA);
     }
+
+    // Caber é uma conta, não uma esperança (§C.3): o termo da busca cede
+    // primeiro (é o que o utilizador acabou de escrever, e um corte ainda o
+    // identifica), o nome da categoria depois — nunca os dois eixos —, e o
+    // indicador do lixo por último (o aviso do transbordo é que fica na 22).
+    let limite = usize::from(largura).saturating_sub(ETIQUETA_DATA.width() + 1);
+    let mut excesso = (busca
+        .as_ref()
+        .map_or(0, |termo| SEGMENTO_BUSCA + termo.width())
+        + categoria
+            .as_ref()
+            .map_or(0, |nome| SEGMENTO_CATEGORIA + nome.width()))
+    .saturating_sub(limite.saturating_sub(largura_fixo));
+    if excesso > 0
+        && let Some(termo) = busca.as_mut()
+    {
+        let novo = termo
+            .width()
+            .saturating_sub(excesso)
+            .max(LARGURA_MINIMA_SEGMENTO);
+        excesso = excesso.saturating_sub(termo.width().saturating_sub(novo));
+        *termo = cortar(&app.query, novo);
+    }
+    if excesso > 0
+        && let Some(nome) = categoria.as_mut()
+    {
+        let novo = nome
+            .width()
+            .saturating_sub(excesso)
+            .max(LARGURA_MINIMA_SEGMENTO);
+        let cortado = cortar(nome, novo);
+        *nome = cortado;
+    }
+    if let Some(termo) = &busca {
+        spans.push(Span::raw(format!(" · busca \"{termo}\"")));
+    }
+    if let Some(nome) = &categoria {
+        spans.push(Span::raw(format!(" · categoria: {nome}")));
+    }
+
     let lixo = app.counts().trash;
     if lixo > 0 {
         // `(cheio)` é persistente enquanto for verdade: o lixo a transbordar não
@@ -311,7 +418,12 @@ fn linha_de_estado(app: &App, largura: u16) -> Line<'static> {
         } else {
             (format!(" · lixo: {lixo} (L)"), app.theme.fg)
         };
-        spans.push(Span::styled(texto, estilo));
+        let usado: usize = spans.iter().map(Span::width).sum();
+        // O lixo cede (não é um eixo, é um aviso): o que não couber fica na
+        // linha 22, onde o transbordo é anunciado por palavras (§C.3).
+        if usado + texto.width() <= limite {
+            spans.push(Span::styled(texto, estilo));
+        }
     }
     let etiqueta = Span::raw(ETIQUETA_DATA);
     let usado: usize = spans.iter().map(Span::width).sum::<usize>() + etiqueta.width();
@@ -320,6 +432,24 @@ fn linha_de_estado(app: &App, largura: u16) -> Line<'static> {
     ));
     spans.push(etiqueta);
     Line::from(spans)
+}
+
+/// O nome da categoria do filtro (`F`) para a linha 2 (§C.3), ou `None` quando
+/// o eixo está em `todas` — que não se escreve.
+///
+/// [`CategoryFilter::SemCategoria`] escreve-se por palavras (`sem categoria`) e
+/// não com o rótulo do `enum`; e um filtro pendurado numa categoria que já não
+/// existe (o `App` repõe-no em `Todas` ao eliminar, ADR §8) cai no rótulo
+/// genérico — é o que resta dizer quando o `id` não resolve.
+fn nome_da_categoria_filtrada(app: &App) -> Option<String> {
+    match &app.category_filter {
+        CategoryFilter::Todas => None,
+        CategoryFilter::SemCategoria => Some("sem categoria".to_owned()),
+        CategoryFilter::Uma(id) => Some(app.store().category(id).map_or_else(
+            || app.category_filter.label().to_owned(),
+            |c| c.name.clone(),
+        )),
+    }
 }
 
 /// Uma linha com o conteúdo colado à esquerda e à direita.
@@ -365,16 +495,62 @@ struct Tarefa<'a> {
     coluna: &'a str,
     /// O papel da coluna: `fg`, excepto nas concluídas, que usam `done`.
     estilo_coluna: Style,
+    /// A coluna da categoria (§C.3).
+    categoria: Coluna<'a>,
+}
+
+/// A coluna da categoria de uma linha (§C.3) — o que a linha faz com ela.
+///
+/// Três casos e não dois: a vista do lixo **tem** a coluna e deixa-a vazia
+/// (§C.2), e a amostra da caixa de temas (§T.5) não tem coluna nenhuma. As duas
+/// não são a mesma coisa: sem coluna o título mede-se com a grelha da v1.1 (35
+/// colunas dentro da caixa de temas), e é isso que mantém `80x24-14-temas` byte
+/// a byte igual.
+#[derive(Clone, Copy)]
+enum Coluna<'a> {
+    /// A linha não tem coluna da categoria — a amostra da caixa de temas.
+    Ausente,
+    /// A coluna existe e fica vazia: a vista do lixo não mostra categorias
+    /// (ADR §11), mas a geometria da linha é uma só (§C.2).
+    Vazia,
+    /// O nome da categoria, ou `—` quando a tarefa não tem nenhuma (§C.3: a
+    /// coluna nunca fica só com cor, tem texto).
+    Nome(&'a str),
+}
+
+impl<'a> Coluna<'a> {
+    /// O texto a escrever na coluna — `None` quando a linha não tem coluna.
+    const fn texto(self) -> Option<&'a str> {
+        match self {
+            Self::Ausente => None,
+            Self::Vazia => Some(""),
+            Self::Nome(nome) => Some(nome),
+        }
+    }
 }
 
 /// A linha de uma tarefa da lista.
 ///
 /// É a função que torna os testes de render possíveis (§6): mesma matemática de
-/// colunas de §2 — `▶ ` em 0, `[x] ` em 2, `H ` em 6, título em 8 cortado a
-/// `largura - 21` e a data alinhada à direita — e preenchimento até `largura`,
-/// porque é isso que faz a barra da linha selecionada ser sólida até ao fim.
+/// colunas de §2 — `▶ ` em 0, `[x] ` em 2, `H ` em 6, título em 8 e a data
+/// alinhada à direita — e preenchimento até `largura`, porque é isso que faz a
+/// barra da linha selecionada ser sólida até ao fim.
+///
+/// Com a coluna da categoria (§C.3) o título cede 15 colunas — 59 → 44 a 80 e
+/// 99 → 84 a 120 — para a coluna de 14 entre o título e a data (`x53..66` a 80).
+/// É o que faz a categoria ler-se **sem abrir a caixa**, que a 80×24 não tem
+/// painel de detalhe nenhum (§2).
+///
+/// Não é API do programa: é a grelha que este módulo mede nos seus próprios
+/// testes, e a [`Coluna`] que ela leva é um detalhe do desenho.
 #[must_use]
-pub fn row_line(tema: &Theme, todo: &Todo, selecionado: bool, largura: u16) -> Line<'static> {
+fn row_line(
+    tema: &Theme,
+    todo: &Todo,
+    categoria: Coluna<'_>,
+    selecionado: bool,
+    largura: u16,
+) -> Line<'static> {
     let (coluna, estilo) = if todo.is_done() {
         // Nas concluídas a coluna é a idade de **conclusão**, com o `✓` a
         // desfazer a ambiguidade (§2).
@@ -393,14 +569,33 @@ pub fn row_line(tema: &Theme, todo: &Todo, selecionado: bool, largura: u16) -> L
             feita: todo.is_done(),
             coluna: &coluna,
             estilo_coluna: estilo,
+            categoria,
         },
         selecionado,
         largura,
     )
 }
 
+/// A coluna da categoria de uma tarefa da lista (§C.3): o nome, ou `—` quando
+/// ela não tem nenhuma.
+///
+/// O `—` e não o vazio: a coluna não tem cor nenhuma, é texto — um branco não
+/// se distingue de uma célula por pintar, e uma referência pendente cai aqui
+/// como em todo o `core` (`Store::category_of`).
+fn categoria_da_tarefa<'a>(app: &'a App, todo: &Todo) -> Coluna<'a> {
+    app.store()
+        .category_of(todo)
+        .map_or(Coluna::Nome("—"), |categoria| {
+            Coluna::Nome(&categoria.name)
+        })
+}
+
 /// Linha de uma entrada do lixo: mesma grelha, e a coluna da direita é sempre a
 /// data de **remoção** — nunca o `✓` de conclusão.
+///
+/// A coluna da categoria existe (a geometria é uma só) mas vai [`Coluna::Vazia`]:
+/// mostrar um `—` afirmaria «sem categoria» sobre tarefas que podem ter uma
+/// (§C.2). Os frames do lixo ficam por isso byte a byte iguais aos da v1.1.
 fn linha_do_lixo(
     tema: &Theme,
     entrada: &Trashed,
@@ -416,6 +611,7 @@ fn linha_do_lixo(
             feita: entrada.todo.is_done(),
             coluna: &coluna,
             estilo_coluna: tema.fg,
+            categoria: Coluna::Vazia,
         },
         selecionado,
         largura,
@@ -428,29 +624,59 @@ fn linha_de_tarefa(
     selecionado: bool,
     largura: u16,
 ) -> Line<'static> {
+    let letras = usize::from(largura);
+    // A coluna da categoria corta-se a 14 — é o mesmo corte do lado da caixa
+    // (49): um nome de 67 colunas fica `Backups do se…` na lista (§C.3, §C.6).
+    let categoria = tarefa
+        .categoria
+        .texto()
+        .map(|texto| cortar(texto, LARGURA_CATEGORIA));
     let titulo = cortar(
         tarefa.titulo,
-        usize::from(largura.saturating_sub(RESERVA_DIREITA)),
+        usize::from(largura.saturating_sub(if categoria.is_some() {
+            RESERVA_CATEGORIA
+        } else {
+            RESERVA_DIREITA
+        })),
     );
+    let (antes, depois, texto_categoria) = match &categoria {
+        // Sem coluna da categoria (a amostra da caixa de temas): tudo o que
+        // sobra é folga entre o título e a data, como na v1.1.
+        None => (
+            letras.saturating_sub(COLUNA_TITULO + titulo.width() + tarefa.coluna.width()),
+            0,
+            "",
+        ),
+        Some(texto) => {
+            // A coluna da categoria começa em `W-27` e a data acaba em `W-1`
+            // (§C.1): a folga de uma coluna entre as duas é o que absorve uma
+            // contagem de cinco dígitos.
+            let inicio = letras.saturating_sub(1 + LARGURA_DATA + LARGURA_CATEGORIA);
+            (
+                inicio.saturating_sub(COLUNA_TITULO + titulo.width()),
+                letras.saturating_sub(inicio + texto.width() + tarefa.coluna.width()),
+                texto.as_str(),
+            )
+        }
+    };
     let marca = marca_de_prioridade(tarefa.prioridade);
     let prefixo = if selecionado { "▶ " } else { "  " };
     let caixa = if tarefa.feita { "[x] " } else { "[ ] " };
-    let usado = COLUNA_TITULO + titulo.width() + tarefa.coluna.width();
-    let espaco = usize::from(largura).saturating_sub(usado);
 
     if selecionado {
         // A barra é uniforme: os spans usam só o papel `fg` (§3).
         return Line::from(Span::styled(
             format!(
-                "{prefixo}{caixa}{marca} {titulo}{}{}",
-                " ".repeat(espaco),
+                "{prefixo}{caixa}{marca} {titulo}{}{texto_categoria}{}{}",
+                " ".repeat(antes),
+                " ".repeat(depois),
                 tarefa.coluna
             ),
             tema.selec,
         ));
     }
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::raw(prefixo.to_owned()),
         Span::styled(
             caixa.to_owned(),
@@ -465,9 +691,16 @@ fn linha_de_tarefa(
             },
         ),
         Span::styled(titulo, if tarefa.feita { tema.riscado } else { tema.fg }),
-        Span::raw(" ".repeat(espaco)),
-        Span::styled(tarefa.coluna.to_owned(), tarefa.estilo_coluna),
-    ])
+        Span::raw(" ".repeat(antes)),
+    ];
+    if !texto_categoria.is_empty() {
+        // O papel da coluna é o `fg` do tema (a categoria não tem cor própria:
+        // é texto, e é isso que a mantém legível em qualquer tema, §C.3).
+        spans.push(Span::styled(texto_categoria.to_owned(), tema.fg));
+    }
+    spans.push(Span::raw(" ".repeat(depois)));
+    spans.push(Span::styled(tarefa.coluna.to_owned(), tarefa.estilo_coluna));
+    Line::from(spans)
 }
 
 fn lista(app: &App, largura: u16) -> List<'static> {
@@ -491,7 +724,13 @@ fn lista(app: &App, largura: u16) -> List<'static> {
             .into_iter()
             .enumerate()
             .map(|(i, todo)| {
-                ListItem::new(row_line(app.theme, todo, selecionado == Some(i), largura))
+                ListItem::new(row_line(
+                    app.theme,
+                    todo,
+                    categoria_da_tarefa(app, todo),
+                    selecionado == Some(i),
+                    largura,
+                ))
             })
             .collect()
     };
@@ -554,7 +793,12 @@ fn centrada(texto: &str, largura: u16) -> Line<'static> {
 
 // ------------------------------------------------------------ painel (§2, §4)
 
-/// As 4 linhas do painel (a régua «selecionada» é desenhada à parte).
+/// As 5 linhas do painel (a régua «selecionada» é desenhada à parte).
+///
+/// A `Categoria` entrou entre a `Descrição` e a `Prioridade` (§C.3) e com o nome
+/// **inteiro** — é para isso que o painel existe (na lista o nome tem 14
+/// colunas): o painel passa a `régua + 5 linhas` e a lista encolhe uma (21 → 20
+/// entradas visíveis a 120×32).
 fn painel(app: &App, largura: u16) -> Vec<Line<'static>> {
     let Some(todo) = app.selected() else {
         return vec![Line::default(); usize::from(ALTURA_PAINEL - 1)];
@@ -568,9 +812,14 @@ fn painel(app: &App, largura: u16) -> Vec<Line<'static>> {
         || "—".to_owned(),
         |data| data.format("%Y-%m-%d").to_string(),
     );
+    let categoria = app
+        .store()
+        .category_of(todo)
+        .map_or_else(|| "—".to_owned(), |categoria| categoria.name.clone());
     let linhas = [
         ("Título", todo.title.clone()),
         ("Descrição", todo.description.clone()),
+        ("Categoria", categoria),
         (
             "Prioridade",
             format!(
@@ -634,7 +883,7 @@ fn mensagem(app: &App, largura: u16, com_painel: bool) -> Line<'static> {
 /// mockup: no `Buffer` essa célula não tem nada (§8, armadilha 1).
 fn entrada(app: &App) -> Line<'static> {
     let mut spans = vec![
-        Span::styled(app.mode.label().to_owned(), app.theme.accent),
+        Span::styled(etiqueta_da_entrada(app).to_owned(), app.theme.accent),
         Span::raw("  "),
     ];
     let buffer = app.input();
@@ -658,7 +907,20 @@ fn coluna_do_cursor(app: &App) -> Option<u16> {
         return None;
     }
     let antes: String = app.input().chars().take(app.cursor()).collect();
-    u16::try_from(app.mode.label().width() + 2 + antes.width()).ok()
+    u16::try_from(etiqueta_da_entrada(app).width() + 2 + antes.width()).ok()
+}
+
+/// A etiqueta da linha de texto da linha 22 (§C.4).
+///
+/// Um só modo (`CategoryName`) serve as duas intenções de escrita do nome: o
+/// `Enter` cria (`Nova categoria`) ou renomeia (`Renomear`), e é o
+/// [`App::renomeando_categoria`] que o diz — o `label()` do modo é um só.
+fn etiqueta_da_entrada(app: &App) -> &'static str {
+    if app.renomeando_categoria() {
+        ETIQUETA_RENOMEAR
+    } else {
+        app.mode.label()
+    }
 }
 
 /// O que o `Enter` faria com a entrada selecionada do lixo — a informação que
@@ -694,6 +956,15 @@ fn barra_de_ajuda(app: &App) -> Line<'static> {
         // A caixa de temas é uma sobreposição como a ajuda: as teclas da lista
         // estão desactivadas lá dentro, e a barra só pode dizer o que lá se faz.
         BARRA_TEMAS
+    } else if matches!(app.mode, InputMode::Category) {
+        // Com a caixa de categorias aberta resta sair sem atribuir; com a guarda
+        // armada, a barra é a do lixo armado — o mesmo estado, o mesmo desenho
+        // (é o que o frame `80x24-21-categorias-guarda` fixa).
+        if app.categoria_armada().is_some() {
+            BARRA_ARMADO
+        } else {
+            BARRA_CATEGORIAS
+        }
     } else if app.mode.is_text() {
         BARRA_INPUT
     } else if matches!(app.mode, InputMode::Trash) {
@@ -1018,6 +1289,9 @@ fn linha_da_amostra(app: &App, amostra: &Amostra, largura: u16) -> Line<'static>
             } else {
                 app.theme.fg
             },
+            // A amostra da caixa de temas não tem coluna da categoria (§T.5): a
+            // sua medida é a de antes da v1.2.
+            categoria: Coluna::Ausente,
         },
         amostra.marcada,
         largura,
@@ -1049,6 +1323,259 @@ fn celulas_para_linha(celulas: Vec<(char, Style)>) -> Line<'static> {
         }
     }
     Line::from(spans)
+}
+
+// ------------------------------------------------- caixa de categorias (§C)
+
+/// Caixa de categorias sobreposta (`C`, §C.1).
+///
+/// É o mesmo rectângulo da ajuda e da caixa de temas — 60×15, `Clear` antes de
+/// desenhar, moldura com o nome na borda de cima e as teclas vivas na de baixo
+/// —, e a 80×24 fica em `(10, 4)`, ou seja as linhas 5 a 19 do ecrã. É por isso
+/// que a linha 22 continua livre para a linha de texto de criar/renomear (§C.4).
+///
+/// O que a distingue da caixa de temas: a primeira linha é sempre `sem
+/// categoria` (é o `None`, não uma categoria), cada entrada tem a contagem das
+/// tarefas dessa categoria à direita, e há uma linha de estado — a única linha
+/// do interior que muda de conteúdo.
+fn desenha_categorias(frame: &mut Frame, app: &App, area: Rect) {
+    let largura = CAIXA_CATEGORIAS.0.min(area.width);
+    let altura = CAIXA_CATEGORIAS.1.min(area.height);
+    let caixa = Rect::new(
+        area.x + (area.width - largura) / 2,
+        area.y + (area.height - altura) / 2,
+        largura,
+        altura,
+    );
+    frame.render_widget(Clear, caixa);
+    // Como na ajuda e nas temas: o `Clear` repõe as células a `Reset` e leva o
+    // fundo do tema com ele — repinta-se a caixa logo a seguir.
+    pinta_o_fundo(frame, app, caixa);
+    frame.render_widget(
+        Paragraph::new(linhas_das_categorias(app, largura, altura)),
+        caixa,
+    );
+}
+
+fn linhas_das_categorias(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> {
+    let colunas = usize::from(largura);
+    // Colunas úteis de uma linha interior: a moldura tira quatro (as duas
+    // paredes e as duas colunas em branco do molde da ajuda) — 56 a 60 de largura.
+    let util = largura.saturating_sub(4);
+    let entradas = entradas_da_caixa(app);
+    // Uma janela mais alta do que a caixa não existe: num terminal curto a
+    // caixa encolhe com ele, como a de temas.
+    let visiveis = CATEGORIAS_VISIVEIS.min(usize::from(altura).saturating_sub(5));
+    let inicio = janela_das_categorias(app.categoria_cursor, entradas.len(), visiveis);
+
+    let mut interiores = Vec::with_capacity(usize::from(altura).saturating_sub(2));
+    // A linha em branco do topo (é a linha 5 do ecrã a 80×24).
+    interiores.push(Line::default());
+    // O cabeçalho e, só quando há mais entradas do que linhas, que parte da
+    // lista se está a ver (§C.6).
+    let titulo = Span::styled("Categorias", app.theme.accent);
+    interiores.push(if entradas.len() > visiveis {
+        barra(
+            titulo,
+            Span::styled(
+                format!(
+                    "{}–{} de {}",
+                    inicio + 1,
+                    (inicio + visiveis).min(entradas.len()),
+                    entradas.len()
+                ),
+                app.theme.fg,
+            ),
+            util,
+        )
+    } else {
+        Line::from(titulo)
+    });
+    let no_cursor = app.categoria_cursor;
+    for posicao in 0..visiveis {
+        interiores.push(entradas.get(inicio + posicao).map_or_else(
+            Line::default,
+            |(nome, conta)| {
+                linha_da_categoria(app, nome, *conta, inicio + posicao == no_cursor, util)
+            },
+        ));
+    }
+    let (estado, estilo) = estado_da_caixa(app, usize::from(util));
+    interiores.push(Line::from(Span::styled(estado, estilo)));
+
+    // A caixa é recortada por um terminal mais baixo (o `App` não conhece a
+    // área): o que não couber sai e o que faltar fica em branco — nunca meia
+    // caixa com as linhas trocadas.
+    let uteis = usize::from(altura).saturating_sub(2);
+    interiores.truncate(uteis);
+    interiores.resize(uteis, Line::default());
+
+    let mut linhas = Vec::with_capacity(usize::from(altura));
+    linhas.push(moldura_do_topo(app.theme, " categorias ", colunas));
+    for conteudo in &interiores {
+        linhas.push(com_paredes(app.theme, conteudo, colunas));
+    }
+    linhas.push(moldura_da_base(
+        app.theme,
+        Some(teclas_da_caixa(app)),
+        colunas,
+    ));
+    linhas
+}
+
+/// Uma entrada da caixa: o `▶` do cursor (e o nome em `accent`), o nome cortado
+/// a 49 colunas e a contagem alinhada à direita, a acabar em `x0+57` (§C.1).
+fn linha_da_categoria(
+    app: &App,
+    nome: &str,
+    conta: usize,
+    no_cursor: bool,
+    util: u16,
+) -> Line<'static> {
+    let nome = format!(
+        "{}{}",
+        if no_cursor { "▶ " } else { "  " },
+        cortar(nome, NOME_CATEGORIA)
+    );
+    barra(
+        Span::styled(
+            nome,
+            if no_cursor {
+                app.theme.accent
+            } else {
+                app.theme.fg
+            },
+        ),
+        Span::styled(format!("({conta})"), app.theme.fg),
+        util,
+    )
+}
+
+/// As entradas da caixa (§C.1): `sem categoria` primeiro e as categorias pela
+/// ordem de inserção, cada uma com a contagem das tarefas que lhe pertencem.
+///
+/// A contagem conta as tarefas **da lista** e não as do lixo: é o que o frame
+/// `80x24-15-categorias` fixa (`sem categoria (2)` com três tarefas no lixo) e o
+/// que faz a caixa servir para triar e não só para escolher. Uma referência
+/// pendente conta como «sem categoria», como em todo o `core`.
+fn entradas_da_caixa(app: &App) -> Vec<(String, usize)> {
+    let categorias = app.store().categories();
+    let mut contagens = vec![0usize; categorias.len() + 1];
+    for todo in app.store().todos() {
+        let posicao = app
+            .store()
+            .category_of(todo)
+            .and_then(|categoria| categorias.iter().position(|outra| outra.id == categoria.id))
+            .map_or(0, |indice| indice + 1);
+        contagens[posicao] += 1;
+    }
+    // O índice 0 é o `sem categoria` — a primeira linha da caixa — e as
+    // categorias aparecem mesmo sem tarefas: a linha existe, logo a contagem também.
+    std::iter::once(("sem categoria".to_owned(), contagens[0]))
+        .chain(
+            categorias
+                .iter()
+                .zip(&contagens[1..])
+                .map(|(categoria, conta)| (categoria.name.clone(), *conta)),
+        )
+        .collect()
+}
+
+/// O deslocamento da janela da caixa: o cursor nunca sai de vista e a caixa
+/// **não cresce** com o número de categorias (§C.6) — ao passar da 10.ª entrada,
+/// a janela anda com ele e o cabeçalho diz onde se está.
+fn janela_das_categorias(cursor: usize, total: usize, visiveis: usize) -> usize {
+    if visiveis == 0 || total <= visiveis {
+        return 0;
+    }
+    cursor.saturating_sub(visiveis - 1).min(total - visiveis)
+}
+
+/// As teclas vivas na borda de baixo da caixa (§C.2) — uma das quatro variantes
+/// medidas, pela regra da §5: o rodapé só anuncia o que faz alguma coisa aqui.
+fn teclas_da_caixa(app: &App) -> &'static str {
+    if matches!(app.mode, InputMode::CategoryName) {
+        return TECLAS_CATEGORIAS_TEXTO;
+    }
+    if app.categoria_armada().is_some() {
+        return TECLAS_CATEGORIAS_GUARDA;
+    }
+    if app.store().categories().is_empty() || app.selected().is_none() {
+        // O `e` e o `d` precisam de uma categoria para apontar e o `Enter` de uma
+        // tarefa para receber a atribuição: sem uma das duas, o rodapé reduz-se
+        // ao que continua a fazer alguma coisa (a lição do lixo vazio, §5).
+        return TECLAS_CATEGORIAS_SEM;
+    }
+    TECLAS_CATEGORIAS
+}
+
+/// A linha de estado da caixa (§C.4) e o seu papel de cor — a única linha do
+/// interior que muda de conteúdo.
+///
+/// A precedência é a da linha 22 — **erro, guarda armada, dica do modo de texto,
+/// vazio e por fim o estado**. O erro fica aqui (e não na 22) porque a 22 é onde
+/// o utilizador está a escrever: uma das duas tinha de ceder, e a do texto não
+/// pode (perder-se-ia o que está escrito).
+fn estado_da_caixa(app: &App, util: usize) -> (String, Style) {
+    if let Status::Error(texto) = &app.status {
+        return (cortar(texto, util), app.theme.err);
+    }
+    if let Some(id) = app.categoria_armada() {
+        return (cortar(&mensagem_da_guarda(app, id), util), app.theme.high);
+    }
+    if matches!(app.mode, InputMode::CategoryName) {
+        return (CAIXA_DICA_DE_TEXTO.to_owned(), app.theme.fg);
+    }
+    if app.store().categories().is_empty() {
+        return (CAIXA_SEM_CATEGORIAS.to_owned(), app.theme.fg);
+    }
+    (cortar(&atribuicao_da_selecionada(app), util), app.theme.fg)
+}
+
+/// `Eliminar «X»? 2 tarefas ficam sem categoria` — o preço exacto da segunda
+/// pressão do `d` (§C.4).
+///
+/// O nome corta-se como nas mensagens de acção da linha 22 (`nome_na_mensagem`);
+/// a mensagem inteira corta-se só se ainda não couber na linha da caixa, que é
+/// mais estreita do que a 22 — o que corta é o fim, nunca a contagem sozinha.
+fn mensagem_da_guarda(app: &App, id: &CategoryId) -> String {
+    let nome = app
+        .store()
+        .category(id)
+        .map_or_else(String::new, |categoria| nome_na_mensagem(&categoria.name));
+    let contagem = match tarefas_da_categoria(app, id) {
+        0 => "nenhuma tarefa está nesta categoria".to_owned(),
+        1 => "1 tarefa fica sem categoria".to_owned(),
+        n => format!("{n} tarefas ficam sem categoria"),
+    };
+    format!("Eliminar «{nome}»? {contagem}")
+}
+
+/// Quantas tarefas ficam sem categoria se esta for eliminada — na lista **e** no
+/// lixo, que é o que `Store::delete_category` afecta e o que a mensagem promete.
+fn tarefas_da_categoria(app: &App, id: &CategoryId) -> usize {
+    app.store()
+        .counts_por_categoria()
+        .iter()
+        .find(|(categoria, _)| categoria.is_some_and(|categoria| &categoria.id == id))
+        .map_or(0, |(_, conta)| *conta)
+}
+
+/// O que a tarefa selecionada tem **agora** (`Atribuída: Trabalho`,
+/// `Atribuída: sem categoria`): é o que impede atribuir o que já lá está
+/// (`80x24-15-categorias`).
+///
+/// Sem tarefas selecionadas a linha di-lo — a caixa abre na mesma (ADR §7) e o
+/// que não se pode é deixar o `Enter` parecer avariado
+/// (`80x24-25-categorias-sem-tarefas`).
+fn atribuicao_da_selecionada(app: &App) -> String {
+    match app.selected() {
+        None => CAIXA_SEM_TAREFAS.to_owned(),
+        Some(todo) => match app.store().category_of(todo) {
+            Some(categoria) => format!("Atribuída: {}", categoria.name),
+            None => "Atribuída: sem categoria".to_owned(),
+        },
+    }
 }
 
 // ------------------------------------------------------------------ medidas
@@ -1228,12 +1755,54 @@ mod testes {
     fn row_line_preenche_a_largura_toda() {
         let tema = Theme::default();
         let todo = Todo::try_new("Comprar café").expect("título");
-        assert_eq!(row_line(tema, &todo, false, 80).width(), 80);
-        assert_eq!(
-            row_line(tema, &todo, true, 80).width(),
-            80,
-            "a barra é sólida"
-        );
-        assert_eq!(row_line(tema, &todo, false, 120).width(), 120);
+        for categoria in [Coluna::Nome("Saúde"), Coluna::Vazia, Coluna::Ausente] {
+            assert_eq!(
+                row_line(tema, &todo, categoria, false, 80).width(),
+                80,
+                "a linha preenche as 80 colunas"
+            );
+            assert_eq!(
+                row_line(tema, &todo, categoria, true, 80).width(),
+                80,
+                "a barra é sólida"
+            );
+            assert_eq!(row_line(tema, &todo, categoria, false, 120).width(), 120);
+        }
+    }
+
+    #[test]
+    fn a_coluna_da_categoria_fica_em_x53_a_80() {
+        let tema = Theme::default();
+        let todo = Todo::try_new("Rever o PR").expect("título");
+        let linha = row_line(tema, &todo, Coluna::Nome("Trabalho"), false, 80);
+        let texto: String = linha
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(texto.find("Trabalho"), Some(53), "x53 a 80 (§C.3)");
+        assert_eq!(texto.find("hoje"), Some(80 - 4), "a data acaba em x79");
+        // O `—` de quem não tem categoria também é texto, e não uma coluna vazia:
+        // é o que cumpre «nunca só a cor» (§C.3).
+        let linha = row_line(tema, &todo, Coluna::Nome("—"), false, 80);
+        let texto: String = linha
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(texto.find('—'), Some(53));
+    }
+
+    #[test]
+    fn a_coluna_da_categoria_fica_em_x93_a_120() {
+        let tema = Theme::default();
+        let todo = Todo::try_new("Rever o PR").expect("título");
+        let linha = row_line(tema, &todo, Coluna::Nome("Trabalho"), false, 120);
+        let texto: String = linha
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(texto.find("Trabalho"), Some(93), "x93 a 120 (§C.3)");
     }
 }

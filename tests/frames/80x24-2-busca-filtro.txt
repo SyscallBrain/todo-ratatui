@@ -1,7 +1,7 @@
 todo-ratatui                         1 de 9 tarefas · 7 pendentes · 2 concluídas
 ────────────────────────────────────────────────────────────────────────────────
 filtro: pendentes · ordem: prioridade · busca "café" · lixo: 3 (L)        criada
-  [ ] L Comprar café em grão na Nota Roja                                   hoje
+  [ ] L Comprar café em grão na Nota Roja            Café e compras         hoje
                                                                                 
                                                                                 
                                                                                 
