@@ -48,6 +48,11 @@ parte, exactamente para que perdê-la não possa custar uma tarefa.
   relação à v1.0.1.
 - `--help` e `README.md` descrevem as opções novas e a caixa de temas; a linha «temas
   configuráveis» sai do fora de âmbito e a secção **Temas** entra.
+- **O `.bak` passa a acompanhar o nome do ficheiro.** A escrita atómica, extraída para
+  `src/core/atomic.rs`, deriva o backup do destino (como o `config.json` já fazia) em vez do
+  nome fixo `db.json.bak` da v1.0.1: com `--db /x/foo.json` o backup passa a ser
+  `/x/foo.json.bak`. É a mesma geração anterior, num nome que não mente sobre o que lá está.
+  O caminho por omissão não muda: `db.json` continua a dar `db.json.bak`.
 
 ### Notas
 

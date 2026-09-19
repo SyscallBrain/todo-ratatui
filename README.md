@@ -195,8 +195,8 @@ e o que fica guardado no ficheiro de preferências:
 | Tokyo Night Moon | `tokyo-night-moon` | `#222436` |
 | Clássico (ANSI) | `classico` | — (o fundo do terminal) |
 
-`tokyo-night` é o tema por omissão. O `classico` é o que a v1.0.1 desenhava — as mesmas cores
-nomeadas do terminal, sem pintar fundo — e é também a rede de segurança dos terminais sem
+`tokyo-night` é o tema por omissão. O `classico` é o que a v1.0.1 desenhava — os mesmos índices
+ANSI do terminal, sem pintar fundo — e é também a rede de segurança dos terminais sem
 truecolor (ver [Terminais sem truecolor](#terminais-sem-truecolor)).
 
 ### Como se escolhe
@@ -265,6 +265,12 @@ O modo `auto` (por omissão) pergunta ao terminal se ele suporta truecolor. Se n
 cegas**: o ecrã passa a usar o `classico` e o `config.json` **fica como está**, a escolha
 guardada à espera da próxima vez que houver truecolor. Nada é reescrito por causa disto, e o
 modo pedido também não é gravado.
+
+O que está guardado só é substituído por um `Enter` na caixa de temas. Em `ansi` a caixa
+desenha sempre o `classico` — num terminal de 16 cores não sai daí uma única sequência RGB,
+nem a navegar —, e um `Enter` sem navegar grava o `classico` que está debaixo do cursor;
+escolher um Tokyo Night em `ansi` **grava o pedido** (é o que fica à espera de truecolor), e
+o ecrã só muda quando ele houver.
 
 `--color rgb` força a paleta RGB mesmo que a detecção diga o contrário: é a saída quando a
 detecção mente (um `tmux` sem `Tc`, por exemplo).
