@@ -18,7 +18,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use todo_ratatui::core::{Config, Filter, Store};
 use todo_ratatui::tui::theme::{CATALOGO, SLUG_CLASSICO};
-use todo_ratatui::tui::{Action, App, InputMode, Theme, map_key};
+use todo_ratatui::tui::{Action, App, InputMode, ModoCor, Theme, map_key};
 
 // ------------------------------------------------------------------- fixture
 
@@ -48,7 +48,7 @@ fn base(tag: &str) -> Base {
 fn app(base: &Base, slug: &str) -> App {
     let store = Store::open(&base.db).expect("abrir a base de dados");
     let tema = Theme::por_slug(slug).expect("slug do catálogo");
-    App::com_tema(store, tema, Some(base.config.clone()))
+    App::com_tema(store, tema, Some(base.config.clone()), ModoCor::Rgb)
 }
 
 fn escreve_preferencia(base: &Base, slug: &str) {
@@ -425,7 +425,7 @@ fn com_a_caixa_aberta_nenhuma_tecla_da_lista_faz_nada() {
         store.add(titulo).expect("adicionar");
     }
     let tema = Theme::por_slug("tokyo-night").expect("slug do catálogo");
-    let mut app = App::com_tema(store, tema, Some(base.config.clone()));
+    let mut app = App::com_tema(store, tema, Some(base.config.clone()), ModoCor::Rgb);
     app.list_state.select(Some(1));
     let titulos: Vec<String> = app
         .store()

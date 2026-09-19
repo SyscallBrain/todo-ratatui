@@ -1,7 +1,7 @@
 //! Desenho do ecrã: do [`App`] para o `Buffer`, sem estado próprio.
 //!
 //! A grelha é a do `@designer` (`design-system/todo-ratatui.md` §2–§4) e os
-//! testes de `tests/render.rs` comparam-na com os 14 *golden files* de
+//! testes de `tests/render.rs` comparam-na com os 15 *golden files* de
 //! `tests/frames/`, linha a linha. Nada aqui é uma segunda fonte de verdade:
 //! o que a spec fixa (colunas, cortes, barras de ajuda) está aqui uma única vez.
 //!
@@ -33,7 +33,7 @@ use crate::core::{Priority, TRASH_LIMIT, Todo, Trashed};
 
 use super::app::{App, Status, UNDO_HINT};
 use super::event::InputMode;
-use super::theme::{CATALOGO, Theme};
+use super::theme::{CATALOGO, ModoCor, Theme};
 
 // ------------------------------------------------------------------- cor (§1)
 
@@ -69,6 +69,12 @@ const LARGURA_BUSCA: usize = 20;
 const CAIXA_AJUDA: (u16, u16) = (60, 15);
 const COLUNA_AJUDA_ESQ: usize = 2;
 const COLUNA_AJUDA_DIR: usize = 26;
+/// A caixa de temas (§T.5) **é** o rectângulo da ajuda: mesma medida, mesmo
+/// `Clear`, mesma coluna de conteúdo. Não é uma segunda medida a poder divergir.
+const CAIXA_TEMAS: (u16, u16) = CAIXA_AJUDA;
+/// Coluna onde começa o texto dentro de uma caixa sobreposta — as mesmas duas
+/// colunas da [`COLUNA_AJUDA_ESQ`] (uma parede e um espaço em branco).
+const COLUNA_CAIXA: usize = 2;
 
 const ETIQUETA_DATA: &str = "criada";
 const ETIQUETA_REMOVIDA: &str = "removida";
@@ -91,8 +97,17 @@ const BARRA_UNDO: &str = "u desfazer  ? ajuda";
 const BARRA_VAZIO: &str = "a nova  ? ajuda";
 const BARRA_SEM_RESULTADOS: &str = "Esc limpar  a nova  ? ajuda";
 const BARRA_AJUDA: &str = "? ou Esc fecha a ajuda";
+/// A barra da caixa de temas (§T.5). É a única barra da caixa: as teclas da
+/// lista estão desactivadas enquanto ela está aberta (o modo `Theme` tem mapa
+/// próprio), e o que se pode fazer lá dentro é sair.
+const BARRA_TEMAS: &str = "Esc volta ao tema de entrada";
 
 /// Teclas da ajuda: a lista principal (`80x24-7-ajuda`).
+///
+/// As duas teclas de vista (`L`, `T`) ficam lado a lado, antes das de ficheiro
+/// (§T.6): a caixa tem 13 linhas interiores e nenhuma livre, por isso o `T`
+/// entrou sem a caixa crescer — o espaçador que separava `i importar · x
+/// exportar` da linha de saída é que saiu.
 const TECLAS_AJUDA: [(&str, &str); 13] = [
     ("", ""),
     ("Navegação", "Tarefas"),
@@ -104,8 +119,8 @@ const TECLAS_AJUDA: [(&str, &str); 13] = [
     ("f  filtrar", "t  alternar todas"),
     ("/  buscar", "c  limpar concluídas"),
     ("Esc  limpar busca", "L  ver o lixo"),
+    ("", "T  tema"),
     ("", "i  importar · x  exportar"),
-    ("", ""),
     ("Esc  fechar a ajuda", "q  sair"),
 ];
 
@@ -320,15 +335,37 @@ fn regua(tema: &Theme, largura: u16) -> Line<'static> {
 
 /// Régua com etiqueta à esquerda — a do painel de detalhe (`─ selecionada ─…`).
 fn regua_da_selecionada(tema: &Theme, largura: u16) -> Line<'static> {
-    let cabeca = "─ selecionada ";
-    let resto = usize::from(largura).saturating_sub(cabeca.width());
+    regua_com_etiqueta(tema, "─ selecionada ", largura)
+}
+
+/// Régua de `largura` colunas com uma etiqueta à cabeça (`─ etiqueta ─────…`),
+/// que traz o `─` e o espaço final já incluídos.
+fn regua_com_etiqueta(tema: &Theme, etiqueta: &str, largura: u16) -> Line<'static> {
+    let resto = usize::from(largura).saturating_sub(etiqueta.width());
     Line::from(Span::styled(
-        format!("{cabeca}{}", "─".repeat(resto)),
+        format!("{etiqueta}{}", "─".repeat(resto)),
         tema.rule,
     ))
 }
 
 // ---------------------------------------------------------------------- lista
+
+/// O que a linha de uma tarefa mostra (§2) — venha ela da lista, da vista do
+/// lixo ou da amostra da caixa de temas.
+///
+/// Existe para a matemática de colunas de §2 viver num sítio só. A amostra da
+/// caixa (§T.5) não é um `Todo`: os títulos são reais mas curtos e as idades são
+/// fixas (uma idade relativa a hoje mudaria o desenho de um dia para o outro) —
+/// o que a amostra mostra são os papéis de cor, e desenha-se com estas colunas.
+struct Tarefa<'a> {
+    titulo: &'a str,
+    prioridade: Priority,
+    feita: bool,
+    /// A coluna da direita, já composta: a idade, ou `✓ há N d` nas concluídas.
+    coluna: &'a str,
+    /// O papel da coluna: `fg`, excepto nas concluídas, que usam `done`.
+    estilo_coluna: Style,
+}
 
 /// A linha de uma tarefa da lista.
 ///
@@ -348,7 +385,18 @@ pub fn row_line(tema: &Theme, todo: &Todo, selecionado: bool, largura: u16) -> L
     } else {
         (idade(todo.created_at.date_naive(), hoje()), tema.fg)
     };
-    linha_de_tarefa(tema, todo, &coluna, estilo, selecionado, largura)
+    linha_de_tarefa(
+        tema,
+        &Tarefa {
+            titulo: &todo.title,
+            prioridade: todo.priority,
+            feita: todo.is_done(),
+            coluna: &coluna,
+            estilo_coluna: estilo,
+        },
+        selecionado,
+        largura,
+    )
 }
 
 /// Linha de uma entrada do lixo: mesma grelha, e a coluna da direita é sempre a
@@ -360,33 +408,43 @@ fn linha_do_lixo(
     largura: u16,
 ) -> Line<'static> {
     let coluna = idade(entrada.deleted_at.date_naive(), hoje());
-    linha_de_tarefa(tema, &entrada.todo, &coluna, tema.fg, selecionado, largura)
+    linha_de_tarefa(
+        tema,
+        &Tarefa {
+            titulo: &entrada.todo.title,
+            prioridade: entrada.todo.priority,
+            feita: entrada.todo.is_done(),
+            coluna: &coluna,
+            estilo_coluna: tema.fg,
+        },
+        selecionado,
+        largura,
+    )
 }
 
 fn linha_de_tarefa(
     tema: &Theme,
-    todo: &Todo,
-    coluna: &str,
-    estilo_coluna: Style,
+    tarefa: &Tarefa<'_>,
     selecionado: bool,
     largura: u16,
 ) -> Line<'static> {
     let titulo = cortar(
-        &todo.title,
+        tarefa.titulo,
         usize::from(largura.saturating_sub(RESERVA_DIREITA)),
     );
-    let marca = marca_de_prioridade(todo.priority);
+    let marca = marca_de_prioridade(tarefa.prioridade);
     let prefixo = if selecionado { "▶ " } else { "  " };
-    let caixa = if todo.is_done() { "[x] " } else { "[ ] " };
-    let usado = COLUNA_TITULO + titulo.width() + coluna.width();
+    let caixa = if tarefa.feita { "[x] " } else { "[ ] " };
+    let usado = COLUNA_TITULO + titulo.width() + tarefa.coluna.width();
     let espaco = usize::from(largura).saturating_sub(usado);
 
     if selecionado {
         // A barra é uniforme: os spans usam só o papel `fg` (§3).
         return Line::from(Span::styled(
             format!(
-                "{prefixo}{caixa}{marca} {titulo}{}{coluna}",
-                " ".repeat(espaco)
+                "{prefixo}{caixa}{marca} {titulo}{}{}",
+                " ".repeat(espaco),
+                tarefa.coluna
             ),
             tema.selec,
         ));
@@ -396,26 +454,19 @@ fn linha_de_tarefa(
         Span::raw(prefixo.to_owned()),
         Span::styled(
             caixa.to_owned(),
-            if todo.is_done() { tema.done } else { tema.fg },
+            if tarefa.feita { tema.done } else { tema.fg },
         ),
         Span::styled(
             format!("{marca} "),
-            if todo.priority == Priority::High {
+            if tarefa.prioridade == Priority::High {
                 tema.high
             } else {
                 tema.fg
             },
         ),
-        Span::styled(
-            titulo,
-            if todo.is_done() {
-                tema.riscado
-            } else {
-                tema.fg
-            },
-        ),
+        Span::styled(titulo, if tarefa.feita { tema.riscado } else { tema.fg }),
         Span::raw(" ".repeat(espaco)),
-        Span::styled(coluna.to_owned(), estilo_coluna),
+        Span::styled(tarefa.coluna.to_owned(), tarefa.estilo_coluna),
     ])
 }
 
@@ -639,6 +690,10 @@ fn pre_visualizacao_do_lixo(app: &App, util: usize) -> Line<'static> {
 fn barra_de_ajuda(app: &App) -> Line<'static> {
     let texto = if matches!(app.mode, InputMode::Help) {
         BARRA_AJUDA
+    } else if matches!(app.mode, InputMode::Theme) {
+        // A caixa de temas é uma sobreposição como a ajuda: as teclas da lista
+        // estão desactivadas lá dentro, e a barra só pode dizer o que lá se faz.
+        BARRA_TEMAS
     } else if app.mode.is_text() {
         BARRA_INPUT
     } else if matches!(app.mode, InputMode::Trash) {
@@ -706,22 +761,7 @@ fn linhas_da_ajuda(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> {
 
     // Topo: `╭── ajuda ─…─╮` (na vista do lixo a caixa é a mesma; o que muda é a
     // lista de teclas lá dentro).
-    let mut topo = vec![
-        ('╭', app.theme.rule),
-        ('─', app.theme.rule),
-        ('─', app.theme.rule),
-    ];
-    topo.extend(
-        " ajuda "
-            .chars()
-            .map(|caracter| (caracter, app.theme.accent)),
-    );
-    while topo.len() < colunas.saturating_sub(1) {
-        topo.push(('─', app.theme.rule));
-    }
-    topo.push(('╮', app.theme.rule));
-    topo.truncate(colunas);
-    linhas.push(celulas_para_linha(topo));
+    linhas.push(moldura_do_topo(app.theme, " ajuda ", colunas));
 
     for indice in 0..usize::from(altura).saturating_sub(2) {
         let mut celulas = vec![('│', app.theme.rule)];
@@ -744,15 +784,57 @@ fn linhas_da_ajuda(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> {
         linhas.push(celulas_para_linha(celulas));
     }
 
-    let mut base = vec![('╰', app.theme.rule)];
-    while base.len() < colunas.saturating_sub(1) {
-        base.push(('─', app.theme.rule));
-    }
-    base.push(('╯', app.theme.rule));
-    base.truncate(colunas);
-    linhas.push(celulas_para_linha(base));
+    linhas.push(moldura_da_base(app.theme, None, colunas));
 
     linhas
+}
+
+/// Primeira linha de uma caixa sobreposta: `╭── <etiqueta> ─…─╮`.
+///
+/// A etiqueta é o nome da caixa e o único texto em `accent` da moldura (o resto
+/// é a régua do tema).
+fn moldura_do_topo(tema: &Theme, etiqueta: &str, colunas: usize) -> Line<'static> {
+    let mut celulas = vec![('╭', tema.rule), ('─', tema.rule), ('─', tema.rule)];
+    celulas.extend(etiqueta.chars().map(|caracter| (caracter, tema.accent)));
+    while celulas.len() < colunas.saturating_sub(1) {
+        celulas.push(('─', tema.rule));
+    }
+    celulas.push(('╮', tema.rule));
+    celulas.truncate(colunas);
+    celulas_para_linha(celulas)
+}
+
+/// Última linha de uma caixa sobreposta: `╰───…──╯` e, quando a caixa tem barra
+/// de teclas (a de temas, §T.5), o texto dela a começar na [`COLUNA_CAIXA`], por
+/// cima dos `─`.
+fn moldura_da_base(tema: &Theme, etiqueta: Option<&str>, colunas: usize) -> Line<'static> {
+    let mut celulas = vec![('╰', tema.rule)];
+    while celulas.len() < colunas.saturating_sub(1) {
+        celulas.push(('─', tema.rule));
+    }
+    celulas.push(('╯', tema.rule));
+    celulas.truncate(colunas);
+    if let Some(etiqueta) = etiqueta {
+        escreve(&mut celulas, COLUNA_CAIXA, etiqueta, tema.accent);
+    }
+    celulas_para_linha(celulas)
+}
+
+/// Põe `conteudo` dentro das paredes da caixa: `│` na primeira e na última
+/// coluna, o texto a começar na [`COLUNA_CAIXA`] (como na ajuda) e o resto do
+/// interior preenchido — a parede da direita não pode depender de o conteúdo
+/// chegar até lá.
+fn com_paredes(tema: &Theme, conteudo: &Line<'static>, colunas: usize) -> Line<'static> {
+    // A parede e a coluna em branco: a primeira célula de texto é a
+    // `COLUNA_CAIXA` da linha.
+    let mut celulas = vec![('│', tema.rule), (' ', tema.fg)];
+    for span in &conteudo.spans {
+        celulas.extend(span.content.chars().map(|caracter| (caracter, span.style)));
+    }
+    celulas.resize(colunas.saturating_sub(1), (' ', tema.fg));
+    celulas.push(('│', tema.rule));
+    celulas.truncate(colunas);
+    celulas_para_linha(celulas)
 }
 
 fn escreve(celulas: &mut [(char, Style)], coluna: usize, texto: &str, estilo: Style) {
@@ -763,20 +845,68 @@ fn escreve(celulas: &mut [(char, Style)], coluna: usize, texto: &str, estilo: St
     }
 }
 
-// ------------------------------------------------------------ temas (§Decisão 9)
+// ------------------------------------------------------------ temas (§T.5)
 
-/// Caixa de temas sobreposta.
+/// A barra de teclas da caixa de temas, escrita por cima da moldura de baixo.
+const TECLAS_TEMAS: &str = " j / k  escolher · Enter  gravar · Esc  voltar ";
+
+/// As três linhas de amostra da caixa de temas (§T.5).
 ///
-/// **Provisória, de propósito:** o desenho da caixa — título, marca do cursor,
-/// linha do tema em uso, amostra com o fundo do tema e a linha do modo de cor —
-/// é do cartão T6, contra o frame `80x24-14-temas.txt` do `@designer`. Aqui fica
-/// só o mínimo para a caixa existir no ecrã e para se ver o tema que está debaixo
-/// do cursor: o rectângulo é o mesmo da ajuda ([`CAIXA_AJUDA`]) e as molduras
-/// são feitas com as mesmas células, para as duas sobreposições não divergirem
-/// de medida.
+/// A caixa tapa as linhas 5-19 — quase toda a lista — e por trás dela não se vê
+/// a barra invertida, nem o `H`, nem o `[x]`. A amostra é o único sítio onde os
+/// três papéis aparecem juntos, e é o que permite decidir entre dois temas com
+/// `fg`/`high`/`done` parecidos sem sair da caixa.
+///
+/// Os títulos são os das tarefas do fixture — reais e curtos — e a coluna da
+/// direita é **texto fixo**: uma idade relativa a hoje mudaria o desenho de um
+/// dia para o outro, e o que a amostra mostra é o desenho dos papéis, não a
+/// lista de quem abre a caixa (a lista está por trás, a mudar com o tema).
+struct Amostra {
+    prioridade: Priority,
+    titulo: &'static str,
+    /// A coluna da direita, já composta (`há 9 d`, `✓ há 20 d`).
+    coluna: &'static str,
+    feita: bool,
+    /// Leva a barra invertida (o papel `selec`), como a linha selecionada.
+    marcada: bool,
+}
+
+const AMOSTRA: [Amostra; 3] = [
+    Amostra {
+        prioridade: Priority::Medium,
+        titulo: "Backup do vault BrainStorm",
+        coluna: "há 9 d",
+        feita: false,
+        marcada: true,
+    },
+    Amostra {
+        prioridade: Priority::High,
+        titulo: "Rever o PR do dashboard axum",
+        coluna: "há 2 d",
+        feita: false,
+        marcada: false,
+    },
+    Amostra {
+        prioridade: Priority::Low,
+        titulo: "Instalar a FiraCode Nerd Font",
+        coluna: "✓ há 20 d",
+        feita: true,
+        marcada: false,
+    },
+];
+
+/// Caixa de temas sobreposta (§T.5).
+///
+/// O mesmo rectângulo e o mesmo `Clear` da ajuda ([`CAIXA_TEMAS`]) — e por isso
+/// a mesma moldura, desenhada pelos mesmos dois helpers — mas com desenho de
+/// **lista** e não de duas colunas de teclas: a lista dos quatro temas do
+/// catálogo, a régua da amostra com três linhas de tarefa e a linha do modo de
+/// cor. O tema do desenho é o que está a ser pré-visualizado ([`App::theme`]), o
+/// que faz a caixa inteira — molduras, nomes e amostra — mudar de cor a cada
+/// `j`/`k`.
 fn desenha_temas(frame: &mut Frame, app: &App, area: Rect) {
-    let largura = CAIXA_AJUDA.0.min(area.width);
-    let altura = CAIXA_AJUDA.1.min(area.height);
+    let largura = CAIXA_TEMAS.0.min(area.width);
+    let altura = CAIXA_TEMAS.1.min(area.height);
     let caixa = Rect::new(
         area.x + (area.width - largura) / 2,
         area.y + (area.height - altura) / 2,
@@ -797,54 +927,114 @@ fn linhas_dos_temas(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> 
     let colunas = usize::from(largura);
     let mut linhas = Vec::with_capacity(usize::from(altura));
 
-    let mut topo = vec![
-        ('╭', app.theme.rule),
-        ('─', app.theme.rule),
-        ('─', app.theme.rule),
-    ];
-    topo.extend(" tema ".chars().map(|c| (c, app.theme.accent)));
-    while topo.len() < colunas.saturating_sub(1) {
-        topo.push(('─', app.theme.rule));
+    linhas.push(moldura_do_topo(app.theme, " tema ", colunas));
+    for conteudo in interiores_dos_temas(app, largura, altura) {
+        linhas.push(com_paredes(app.theme, &conteudo, colunas));
     }
-    topo.push(('╮', app.theme.rule));
-    topo.truncate(colunas);
-    linhas.push(celulas_para_linha(topo));
-
-    for indice in 0..usize::from(altura).saturating_sub(2) {
-        let mut celulas = vec![('│', app.theme.rule)];
-        celulas.extend(std::iter::repeat_n(
-            (' ', app.theme.fg),
-            colunas.saturating_sub(2),
-        ));
-        celulas.push(('│', app.theme.rule));
-        celulas.truncate(colunas);
-        if let Some(tema) = CATALOGO.get(indice) {
-            let debaixo_do_cursor = indice == app.theme_cursor;
-            let prefixo = if debaixo_do_cursor { "▶ " } else { "  " };
-            let estilo = if debaixo_do_cursor {
-                app.theme.accent
-            } else {
-                app.theme.fg
-            };
-            escreve(&mut celulas, 2, &format!("{prefixo}{}", tema.nome), estilo);
-        }
-        linhas.push(celulas_para_linha(celulas));
-    }
-
-    let mut base = vec![('╰', app.theme.rule)];
-    base.extend(
-        "─ j / k  escolher · Enter  gravar · Esc  voltar "
-            .chars()
-            .map(|c| (c, app.theme.fg)),
-    );
-    while base.len() < colunas.saturating_sub(1) {
-        base.push(('─', app.theme.rule));
-    }
-    base.push(('╯', app.theme.rule));
-    base.truncate(colunas);
-    linhas.push(celulas_para_linha(base));
+    linhas.push(moldura_da_base(app.theme, Some(TECLAS_TEMAS), colunas));
 
     linhas
+}
+
+/// As treze linhas interiores da caixa (a moldura ocupa as outras duas), na
+/// ordem do frame `80x24-14-temas`: o título da secção, os quatro temas do
+/// [`CATALOGO`], a régua da amostra com as três linhas de tarefa, o modo de cor —
+/// e as duas linhas em branco que separam os blocos.
+fn interiores_dos_temas(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> {
+    // A largura útil de uma linha de tarefa dentro da caixa: a largura menos a
+    // parede, a coluna em branco e o mesmo do lado direito (60 − 4 = 56).
+    let util = largura.saturating_sub(4);
+    let mut linhas = Vec::new();
+
+    linhas.push(Line::default());
+    linhas.push(Line::from(Span::styled("Temas", app.theme.accent)));
+    for (indice, tema) in CATALOGO.iter().enumerate() {
+        linhas.push(linha_do_catalogo(app, tema, indice, util));
+    }
+    linhas.push(Line::default());
+    linhas.push(regua_da_amostra(app, util));
+    for amostra in &AMOSTRA {
+        linhas.push(linha_da_amostra(app, amostra, util));
+    }
+    linhas.push(Line::default());
+    linhas.push(linha_do_modo_cor(app));
+
+    // A caixa é recortada por um terminal mais baixo (o `App` não sabe a área do
+    // ecrã): o que não couber sai e o que faltar fica em branco — nunca meia
+    // caixa com as linhas trocadas.
+    linhas.truncate(usize::from(altura).saturating_sub(2));
+    linhas.resize(usize::from(altura).saturating_sub(2), Line::default());
+    linhas
+}
+
+/// Uma linha do catálogo: o nome do tema, `▶ ` se for a do cursor (o que está a
+/// ser pré-visualizado) e `em uso` à direita se for a do tema gravado.
+///
+/// As duas marcas são **glifos, não cor** (§T.5): `▶` é onde se está, `em uso` é
+/// o que o `Esc` repõe. Com a caixa acabada de abrir estão na mesma linha —
+/// depois de navegar separam-se, e é isso que se lê.
+fn linha_do_catalogo(app: &App, tema: &Theme, indice: usize, largura: u16) -> Line<'static> {
+    let do_cursor = indice == app.theme_cursor;
+    let nome = format!("{}{}", if do_cursor { "▶ " } else { "  " }, tema.nome);
+    let estilo = if do_cursor {
+        app.theme.accent
+    } else {
+        app.theme.fg
+    };
+    if tema.slug != app.tema_gravado().slug {
+        return Line::from(Span::styled(nome, estilo));
+    }
+    barra(
+        Span::styled(nome, estilo),
+        Span::styled("em uso", app.theme.fg),
+        largura,
+    )
+}
+
+/// `─ amostra · <slug> ─…─` dentro da caixa (§T.5): é a única linha do ecrã onde
+/// o *slug* aparece — o nome é para escolher, o slug é para escrever no
+/// `config.json` ou no `--theme`.
+fn regua_da_amostra(app: &App, largura: u16) -> Line<'static> {
+    regua_com_etiqueta(
+        app.theme,
+        &format!("─ amostra · {} ", app.theme.slug),
+        largura,
+    )
+}
+
+/// Uma das três linhas de amostra: mesma matemática de colunas de §2, à largura
+/// da caixa (§T.5) — a barra invertida, o `H` do `high` e o `[x]` riscado do
+/// `done`.
+fn linha_da_amostra(app: &App, amostra: &Amostra, largura: u16) -> Line<'static> {
+    linha_de_tarefa(
+        app.theme,
+        &Tarefa {
+            titulo: amostra.titulo,
+            prioridade: amostra.prioridade,
+            feita: amostra.feita,
+            coluna: amostra.coluna,
+            estilo_coluna: if amostra.feita {
+                app.theme.done
+            } else {
+                app.theme.fg
+            },
+        },
+        amostra.marcada,
+        largura,
+    )
+}
+
+/// A linha do modo de cor (§T.5): em `ansi` diz que o ecrã desenha o `classico`.
+///
+/// Existe para o `ansi` não parecer avariado: sem ela, navegar por quatro temas
+/// num terminal de 16 cores mostrava um ecrã que não mudava (ADR §Decisão 3).
+fn linha_do_modo_cor(app: &App) -> Line<'static> {
+    let texto = if app.modo_cor == ModoCor::Ansi {
+        "modo de cor: ansi — o ecrã usa o Clássico"
+    } else {
+        "modo de cor: rgb"
+    };
+    Line::from(Span::styled(texto, app.theme.fg))
 }
 
 /// Converte células (carácter + estilo) numa linha, juntando vizinhas iguais —

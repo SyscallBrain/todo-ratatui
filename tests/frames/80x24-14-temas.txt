@@ -1,0 +1,24 @@
+todo-ratatui                              9 tarefas · 7 pendentes · 2 concluídas
+────────────────────────────────────────────────────────────────────────────────
+filtro: todas · ordem: prioridade · lixo: 3 (L)                           criada
+  [ ] H Rever o PR do dashboard axum                                      há 2 d
+▶ [ ] H Re╭── tema ──────────────────────────────────────────────────╮      hoje
+  [ ] M Re│                                                          │   há 12 d
+  [ ] M Ba│ Temas                                                    │    há 9 d
+  [ ] M Es│ ▶ Tokyo Night                                     em uso │    há 5 d
+  [ ] L Co│   Tokyo Night Storm                                      │      hoje
+  [ ] L Te│   Tokyo Night Moon                                       │    há 3 d
+  [x] M Co│   Clássico (ANSI)                                        │  ✓ há 3 d
+  [x] L In│                                                          │ ✓ há 20 d
+          │ ─ amostra · tokyo-night ──────────────────────────────── │          
+          │ ▶ [ ] M Backup do vault BrainStorm                há 9 d │          
+          │   [ ] H Rever o PR do dashboard axum              há 2 d │          
+          │   [x] L Instalar a FiraCode Nerd Font          ✓ há 20 d │          
+          │                                                          │          
+          │ modo de cor: rgb                                         │          
+          ╰─ j / k  escolher · Enter  gravar · Esc  voltar ──────────╯          
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+Descrição: ver ADR — tmp ao lado do ficheiro, nunca em /tmp                     
+Esc volta ao tema de entrada                                                    

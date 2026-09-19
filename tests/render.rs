@@ -628,6 +628,51 @@ fn frame_7_ajuda() {
     assert!(ecra.linhas[4].contains("╭── ajuda ") && ecra.linhas[18].contains("╰──"));
 }
 
+/// A caixa da ajuda ganhou o `T` (§T.6) **sem crescer**: a linha entrou na
+/// coluna das tarefas, entre `L ver o lixo` e `i importar · x exportar`, e o
+/// espaçador que separava as teclas de ficheiro da linha de saída saiu.
+#[test]
+fn a_ajuda_lista_a_tecla_do_tema() {
+    let (_caminho, mut app) = app_da_lista("ajuda-tema");
+    carrega(&mut app, '?');
+    assert_eq!(app.mode, InputMode::Help);
+
+    // O mesmo golden do frame 7, linha a linha: a caixa da ajuda é uma só, e a
+    // linha nova tem de estar no sítio que o `@designer` desenhou.
+    let ecra = assert_frame("80x24-7-ajuda", &app, 80, 24);
+
+    assert!(
+        ecra.linhas[14].contains("L  ver o lixo") && ecra.linhas[15].contains("T  tema"),
+        "o `T` entra a seguir ao `L`:\n{}\n{}",
+        ecra.linhas[14],
+        ecra.linhas[15]
+    );
+    assert!(
+        ecra.linhas[16].contains("i  importar · x  exportar"),
+        "e as teclas de ficheiro vêm logo depois, sem espaçador pelo meio: {}",
+        ecra.linhas[16]
+    );
+    // As duas teclas de vista e as de ficheiro alinham na coluna da direita da
+    // caixa (coluna 26 da caixa, 36 do ecrã).
+    for (linha, tecla) in [(14usize, 'L'), (15, 'T'), (16, 'i')] {
+        assert_eq!(
+            ecra.linhas[linha].chars().nth(36),
+            Some(tecla),
+            "coluna da direita: {}",
+            ecra.linhas[linha]
+        );
+    }
+    assert!(
+        ecra.linhas[17].contains("Esc  fechar a ajuda") && ecra.linhas[17].contains("q  sair"),
+        "a linha de saída continua a ser a última da caixa: {}",
+        ecra.linhas[17]
+    );
+    assert_eq!(
+        ecra.linhas[23], "? ou Esc fecha a ajuda",
+        "a barra da linha 24 da ajuda não mudou com a linha nova"
+    );
+}
+
 /// Base vazia: não é uma lista em branco — diz o que se passa e a tecla que
 /// resolve.
 #[test]
@@ -819,6 +864,113 @@ fn frame_13_lixo_vazio() {
     assert_eq!(ecra.linhas[23], "Esc volta à lista  ? ajuda");
 }
 
+/// Caixa de temas (§T.5): o mesmo rectângulo da ajuda, com o cursor e o `em uso`
+/// no tema em uso, a amostra das três linhas de tarefa e a linha do modo de cor.
+///
+/// O estado é o que se vê **logo a seguir ao `T`** (§T.8, decisão 12): o cursor
+/// abre no tema aplicado — o Tokyo Night do arranque — e é por isso que `▶` e
+/// `em uso` estão na mesma linha. O estado depois de navegar tem a mesma grelha
+/// (medido pelo `@designer`); o que muda são as cores e as duas marcas.
+#[test]
+fn frame_14_temas() {
+    let (_caminho, mut app) = app_da_lista("temas");
+    carrega(&mut app, 'T');
+    assert_eq!(app.mode, InputMode::Theme);
+
+    let ecra = assert_frame("80x24-14-temas", &app, 80, 24);
+
+    // A caixa é a da ajuda — mesmo sítio, mesma medida — e limpa o interior: a
+    // lista não aparece por baixo das linhas em branco.
+    assert!(
+        ecra.linhas[4].contains("╭── tema ") && ecra.linhas[6].contains("│ Temas"),
+        "a moldura e o título da secção: {}",
+        ecra.linhas[4]
+    );
+    // A lista continua visível fora da caixa; dentro das paredes, o que se lê é
+    // a caixa — nada da lista passa por baixo.
+    let interior: String = ecra.linhas[11].chars().skip(11).take(58).collect();
+    assert!(
+        interior.trim().is_empty(),
+        "a caixa limpa a lista por baixo: «{interior}»"
+    );
+
+    // Os quatro nomes do catálogo, na ordem do catálogo, com o `▶` no cursor.
+    for (linha, nome) in [
+        (7usize, "▶ Tokyo Night"),
+        (8, "Tokyo Night Storm"),
+        (9, "Tokyo Night Moon"),
+        (10, "Clássico (ANSI)"),
+    ] {
+        assert!(
+            ecra.linhas[linha].contains(nome),
+            "linha {linha}: esperava «{nome}» em {}",
+            ecra.linhas[linha]
+        );
+    }
+    assert!(
+        ecra.linhas[7].contains("em uso"),
+        "o cursor abre no tema em uso: {}",
+        ecra.linhas[7]
+    );
+    assert!(
+        !ecra.linhas[8].contains("em uso"),
+        "e o `em uso` é uma marca, não a cor da linha: {}",
+        ecra.linhas[8]
+    );
+
+    // A régua diz o slug do que está a ser pré-visualizado (é a única linha onde
+    // ele aparece) e o modo de cor está na última linha interior.
+    assert!(
+        ecra.linhas[12].contains("─ amostra · tokyo-night "),
+        "{}",
+        ecra.linhas[12]
+    );
+    assert!(
+        ecra.linhas[17].starts_with("          │ modo de cor: rgb"),
+        "{}",
+        ecra.linhas[17]
+    );
+
+    // A amostra usa a matemática da lista reduzida à largura da caixa: a barra
+    // invertida vai da coluna 12 à 67 (o interior todo), e é a única barra.
+    for x in [12u16, 40, 67] {
+        assert!(
+            ecra.estilo(x, 13).add_modifier.contains(Modifier::REVERSED),
+            "coluna {x} da linha de amostra selecionada"
+        );
+    }
+    for y in [12u16, 14, 15] {
+        assert!(
+            !ecra.estilo(40, y).add_modifier.contains(Modifier::REVERSED),
+            "linha {y}: a barra é só da linha do `▶`"
+        );
+    }
+    assert_eq!(
+        ecra.estilo(14, 15).fg,
+        app.theme.done.fg,
+        "o `[x]` da amostra usa o papel `done` (colunas da lista: o `[x] ` em 2)"
+    );
+    assert!(
+        ecra.estilo(20, 15)
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT),
+        "e o título da concluída é riscado"
+    );
+    assert_eq!(
+        ecra.estilo(18, 14).fg,
+        app.theme.high.fg,
+        "o `H` da amostra usa o papel `high` (a marca fica na coluna 6)"
+    );
+
+    // A caixa tem barra própria (linha 24 do frame): as teclas da lista não valem
+    // dentro dela, e a barra não é um modo de texto (sem cursor do terminal).
+    assert_eq!(ecra.linhas[23], "Esc volta ao tema de entrada");
+    assert!(
+        !ecra.cursor_visivel(),
+        "a caixa não pede cursor: não há linha de texto aberta"
+    );
+}
+
 /// Painel de detalhe: só existe a partir de 96×28 (o corte é medido em colunas
 /// × linhas, não em pixéis).
 #[test]
@@ -858,7 +1010,7 @@ fn frame_120x32_detalhe() {
 // ------------------------------------------------------- regras de desenho
 
 #[test]
-fn os_quatorze_goldens_estao_no_repo() {
+fn os_quinze_goldens_estao_no_repo() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("frames");
@@ -883,6 +1035,7 @@ fn os_quatorze_goldens_estao_no_repo() {
             "80x24-11-lixo-armado.txt",
             "80x24-12-lixo-transbordo.txt",
             "80x24-13-lixo-vazio.txt",
+            "80x24-14-temas.txt",
             "80x24-2-busca-filtro.txt",
             "80x24-3-adicionar.txt",
             "80x24-4-adicionar-vazio.txt",
@@ -892,7 +1045,7 @@ fn os_quatorze_goldens_estao_no_repo() {
             "80x24-8-vazio.txt",
             "80x24-9-sem-resultados.txt",
         ],
-        "os 14 goldens fazem parte do repositório e cada um tem o seu teste"
+        "os 15 goldens fazem parte do repositório e cada um tem o seu teste"
     );
 }
 

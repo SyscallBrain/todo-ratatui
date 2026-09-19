@@ -93,7 +93,7 @@ fn event_loop(
     store: Store,
     sessao: &Resolucao,
 ) -> io::Result<()> {
-    let mut app = App::com_tema(store, sessao.tema, sessao.config_path.clone());
+    let mut app = App::com_tema(store, sessao.tema, sessao.config_path.clone(), sessao.modo);
     loop {
         terminal.draw(|frame| ui::ui(frame, &app))?;
 

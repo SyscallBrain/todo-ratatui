@@ -20,7 +20,7 @@ use crate::core::{
 };
 
 use super::event::{Action, InputMode, map_key};
-use super::theme::{CATALOGO, Theme};
+use super::theme::{CATALOGO, ModoCor, Theme};
 
 /// Janela da guarda do `c` no lixo: a segunda pressão tem de vir dentro deste
 /// tempo, e qualquer outra acção desarma (§5, mudança 7).
@@ -175,6 +175,15 @@ pub struct App {
     /// Tema que estava aplicado quando a caixa abriu: é o que o `Esc` repõe
     /// (§Decisão 9). Por referência, como o `theme` — o catálogo é `const`.
     theme_entrada: &'static Theme,
+    /// O modo de cor desta sessão (T4), **já resolvido**: um `Auto` passa por
+    /// [`ModoCor::detectar`] no construtor, porque a caixa de temas anuncia
+    /// `rgb` ou `ansi` (§T.5) e um valor farejado a cada desenho faria o ecrã
+    /// depender do ambiente em que o desenho corre.
+    ///
+    /// Existe por causa de uma linha da caixa: em `ansi` o ecrã mostra o
+    /// `classico` e a caixa tem de o dizer — sem ela, navegar por quatro temas
+    /// num terminal de 16 cores parecia a caixa avariada (ADR §Decisão 3).
+    pub modo_cor: ModoCor,
     buffer: Vec<char>,
     cursor: usize,
     /// Em `Editing`: o `Enter` grava a descrição em vez do título.
@@ -196,25 +205,39 @@ impl App {
     /// `src/tui/app.rs`, `tests/render.rs`) e não tem por onde gravar, logo
     /// nenhum teste escreve no `~/.config` real. O arranque a sério usa
     /// [`App::com_tema`].
+    ///
+    /// Sem sessão não há modo de cor para consultar: fica `rgb`, o modo do
+    /// golden `80x24-14-temas`. Um valor fixo (e não `Auto`, que farejaria o
+    /// ambiente a cada desenho) é o que torna o desenho previsível num teste.
     #[must_use]
     pub fn new(store: Store) -> Self {
-        Self::com_tema(store, Theme::default(), None)
+        Self::com_tema(store, Theme::default(), None, ModoCor::Rgb)
     }
 
-    /// O construtor do arranque: o tema e o caminho do `config.json` já
-    /// resolvidos por [`super::arranque::resolver`] (T4).
+    /// O construtor do arranque: o tema, o caminho do `config.json` e o modo de
+    /// cor já resolvidos por [`super::arranque::resolver`] (T4).
     ///
-    /// O [`App`] guarda os dois porque a caixa de temas do T5 precisa deles
-    /// para gravar — e só ela grava: nem `--theme` nem a variável de ambiente
-    /// escrevem no ficheiro (ADR §Decisão 2). O cursor da caixa abre na posição
-    /// do tema **aplicado**, e não na primeira do catálogo: é o que faz o
-    /// `Enter` sem navegar não mudar nada.
+    /// O [`App`] guarda-os porque a caixa de temas do T5 precisa dos dois
+    /// primeiros para gravar — e só ela grava: nem `--theme` nem a variável de
+    /// ambiente escrevem no ficheiro (ADR §Decisão 2) — e o desenho do T6
+    /// precisa do terceiro para a linha `modo de cor:` da caixa. O modo entra
+    /// aqui como o arranque o decidiu (`Auto` incluído) e é guardado
+    /// **detectado**: é o modo que está em vigor que a caixa anuncia.
+    ///
+    /// O cursor da caixa abre na posição do tema **aplicado**, e não na primeira
+    /// do catálogo: é o que faz o `Enter` sem navegar não mudar nada.
     #[must_use]
-    pub fn com_tema(store: Store, theme: &'static Theme, config_path: Option<PathBuf>) -> Self {
+    pub fn com_tema(
+        store: Store,
+        theme: &'static Theme,
+        config_path: Option<PathBuf>,
+        modo_cor: ModoCor,
+    ) -> Self {
         let mut app = Self {
             store,
             theme,
             config_path,
+            modo_cor: modo_cor.detectar(),
             theme_cursor: posicao_no_catalogo(theme),
             theme_entrada: theme,
             list_state: ListState::default(),
@@ -280,6 +303,16 @@ impl App {
     #[must_use]
     pub fn counts(&self) -> Counts {
         self.store.counts()
+    }
+
+    /// O tema **gravado** — o que estava aplicado quando a caixa de temas abriu.
+    ///
+    /// É o que a caixa marca com `em uso` e o que o `Esc` repõe (§T.5): enquanto
+    /// se navega, [`App::theme`] é o candidato a pré-visualizar e este fica
+    /// parado. Fora da caixa os dois coincidem.
+    #[must_use]
+    pub const fn tema_gravado(&self) -> &'static Theme {
+        self.theme_entrada
     }
 
     /// Que tarefas a vista mostra, já filtradas, buscadas e ordenadas.
