@@ -54,6 +54,66 @@ impl FromStr for TodoId {
     }
 }
 
+/// Identificador estável de uma categoria.
+///
+/// Mesmo molde do [`TodoId`], e pela mesma razão: as operações referem-se ao
+/// `id` e o nome é atributo editável (ADR §Decisão 1). É o que torna o
+/// *rename* seguro — nenhuma tarefa guarda o nome.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CategoryId(String);
+
+impl CategoryId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for CategoryId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for CategoryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<String> for CategoryId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl FromStr for CategoryId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+/// Uma categoria de tarefas.
+///
+/// Uma tarefa pertence a **no máximo** uma categoria (ADR §Decisão 1: pertença
+/// múltipla seria outro formato). Sem `created_at` — nada o mostra — e sem cor,
+/// ícone ou ordem manual: a ordem é a de inserção, como a das tarefas. A
+/// unicidade e a limpeza do nome são regra das operações (`core::ops`), não do
+/// modelo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Category {
+    pub id: CategoryId,
+    pub name: String,
+}
+
 /// Prioridade da tarefa. A ordem de declaração é a ordem de ordenação, logo
 /// `High > Medium > Low` (útil para ordenar por prioridade decrescente).
 #[derive(
@@ -144,6 +204,11 @@ pub struct Todo {
     pub completed_at: Option<DateTime<Local>>,
     #[serde(default)]
     pub due_at: Option<NaiveDate>,
+    /// Categoria da tarefa, ou `None` para «sem categoria». `#[serde(default)]`
+    /// é o que faz um ficheiro da v1.1.0 (sem o campo) ler-se como `None`, tal
+    /// como o `2` do envelope (ADR §Decisão 3).
+    #[serde(default)]
+    pub category_id: Option<CategoryId>,
 }
 
 impl Todo {
@@ -162,6 +227,7 @@ impl Todo {
             created_at: Local::now(),
             completed_at: None,
             due_at: None,
+            category_id: None,
         })
     }
 
@@ -180,6 +246,15 @@ impl Todo {
     #[must_use]
     pub fn with_due_at(mut self, due_at: Option<NaiveDate>) -> Self {
         self.due_at = due_at;
+        self
+    }
+
+    /// Atribui (`Some`) ou tira (`None`) a categoria. Como o `with_priority`,
+    /// não valida contra a `Db`: quem garante que a categoria existe é a
+    /// operação que chama isto (`core::ops`), que é quem tem a `Db` à frente.
+    #[must_use]
+    pub fn with_category(mut self, category_id: Option<CategoryId>) -> Self {
+        self.category_id = category_id;
         self
     }
 
@@ -296,5 +371,50 @@ mod tests {
 
         let recarregado: Todo = serde_json::from_value(json).unwrap();
         assert_eq!(recarregado, todo, "o round-trip preserva o instante exacto");
+    }
+
+    #[test]
+    fn categoria_tem_id_proprio_e_round_trip_transparente() {
+        let a = Category {
+            id: CategoryId::new(),
+            name: "Trabalho".to_owned(),
+        };
+        let b = Category {
+            id: CategoryId::new(),
+            name: "Trabalho".to_owned(),
+        };
+        assert_ne!(
+            a.id, b.id,
+            "duas categorias com o mesmo nome têm ids próprios"
+        );
+
+        // O `id` é transparente no JSON (uma string), como o do `Todo`.
+        let json = serde_json::to_value(&a).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "id": a.id.as_str(), "name": "Trabalho" })
+        );
+        assert_eq!(serde_json::from_value::<Category>(json).unwrap(), a);
+    }
+
+    #[test]
+    fn categoria_na_tarefa_e_opcional_e_ausente_le_se_como_none() {
+        let mut todo = Todo::try_new("com categoria").unwrap();
+        assert!(todo.category_id.is_none(), "nasce sem categoria");
+
+        let id = CategoryId::new();
+        todo = todo.with_category(Some(id.clone()));
+        assert_eq!(todo.category_id, Some(id.clone()));
+
+        let json = serde_json::to_value(&todo).unwrap();
+        assert_eq!(json["category_id"], serde_json::json!(id.as_str()));
+
+        // Um ficheiro da v1.1.0 não tem o campo: lê-se como `None`.
+        let mut antigo = json.clone();
+        antigo.as_object_mut().unwrap().remove("category_id");
+        let recarregado: Todo = serde_json::from_value(antigo).unwrap();
+        assert_eq!(recarregado.category_id, None);
+
+        assert_eq!(todo.with_category(None).category_id, None, "None tira");
     }
 }

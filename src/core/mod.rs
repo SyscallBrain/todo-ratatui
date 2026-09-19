@@ -16,7 +16,7 @@ pub use atomic::write_atomic;
 pub use import_export::{
     CSV_COLUMNS, ExportError, ImportError, ImportReport, export_csv_to_path, import_from_path,
 };
-pub use model::{Priority, Todo, TodoError, TodoId};
+pub use model::{Category, CategoryId, Priority, Todo, TodoError, TodoId};
 pub use ops::{ClearOutcome, OpsError, TRASH_LIMIT};
 pub use query::{Counts, Filter, SortKey};
 pub use store::{

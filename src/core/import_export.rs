@@ -678,6 +678,7 @@ impl CsvRow {
                 created_at,
                 completed_at,
                 due_at,
+                category_id: None,
             },
             sem_data,
         ))
@@ -754,6 +755,7 @@ impl LegacyTodo {
                 created_at,
                 completed_at: None,
                 due_at: None,
+                category_id: None,
             },
             sem_data,
         ))
