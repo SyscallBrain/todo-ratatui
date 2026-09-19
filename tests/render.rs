@@ -1,4 +1,4 @@
-//! Testes de render: o ecrã contra os 13 *golden files* do @designer.
+//! Testes de render: o ecrã contra os 14 *golden files* do @designer.
 //!
 //! Os goldens vivem em `tests/frames/*.txt`, **dentro do repositório**: nenhum
 //! teste pode depender do workspace do `@designer`, senão não corre a partir de
@@ -491,7 +491,7 @@ fn frame_2_busca_e_filtro() {
     // não uma mensagem que o `App` escreva —, e o gerador não marcou seleção
     // nenhuma (passou o índice 5 a uma lista de um item). O fixture reproduz o
     // que o frame mostra; o que este frame fixa é o cabeçalho e a linha 2.
-    app.status = Status::Message(
+    app.status = Status::message(
         "Busca activa: 1 de 7 pendentes    Esc limpa a busca e o filtro".to_owned(),
     );
     app.list_state.select(None);
@@ -557,7 +557,7 @@ fn frame_5_undo() {
     // A mensagem é a do próprio `App` (mesmo `format!`, com a marca partilhada
     // `UNDO_HINT`): o que o frame mostra é o estado *com* a mensagem, não o
     // estado depois de remover — a lista ainda tem as 9.
-    app.status = Status::Message(format!(
+    app.status = Status::message(format!(
         "Removida «Comprar café em grão na Nota Roja»    {UNDO_HINT}"
     ));
     let ecra = assert_frame("80x24-5-undo", &app, 80, 24);
@@ -759,6 +759,62 @@ fn frame_12_lixo_transbordo() {
     );
 }
 
+/// Vista do lixo sem nada lá dentro: estado próprio (não o vazio da lista, que
+/// nomearia um filtro inactivo e anunciaria o `a`, tecla morta nesta vista) e
+/// rodapé reduzido às teclas que aqui fazem alguma coisa.
+#[test]
+fn frame_13_lixo_vazio() {
+    let (_caminho, mut app) = app_com("lixo-vazio", tarefas_do_frame(), Vec::new(), None);
+    carrega(&mut app, 'L');
+    assert_eq!(app.mode, InputMode::Trash);
+    assert!(app.visible().is_empty(), "o lixo está vazio");
+
+    let ecra = assert_frame("80x24-13-lixo-vazio", &app, 80, 24);
+    assert!(
+        ecra.linhas[0].ends_with("lixo: 0 de 100"),
+        "{}",
+        ecra.linhas[0]
+    );
+    assert_eq!(
+        ecra.linhas[11],
+        format!("{}Lixo vazio.", " ".repeat(34)),
+        "o corpo é o do lixo vazio, centrado como os outros vazios"
+    );
+    assert_eq!(
+        ecra.linhas[13],
+        format!(
+            "{}O que removeres na lista fica aqui e repõe-se com Enter.",
+            " ".repeat(12)
+        )
+    );
+    assert_eq!(
+        ecra.linhas[2], "vista: lixo · ordem: removidas primeiro",
+        "sem lixo não há coluna de datas para nomear: o rótulo `removida` sai"
+    );
+    assert_eq!(ecra.linhas[22], "", "sem mensagem na linha 22");
+    assert_eq!(
+        ecra.linhas[23], "Esc volta à lista  ? ajuda",
+        "o rodapé só mostra as teclas vivas neste contexto"
+    );
+
+    // §4: dentro do lixo o vazio do lixo tem **precedência** sobre os vazios da
+    // lista. Com a base também vazia, o que decide é o do lixo.
+    let (_outro, mut sem_nada) = app_com("lixo-vazio-base", Vec::new(), Vec::new(), None);
+    carrega(&mut sem_nada, 'L');
+    let ecra = desenhar(&sem_nada, 80, 24);
+    assert_eq!(
+        ecra.linhas[11],
+        format!("{}Lixo vazio.", " ".repeat(34)),
+        "com a base vazia também, o corpo continua a ser o do lixo"
+    );
+    assert!(
+        !ecra.linhas[11].contains("Sem tarefas"),
+        "e não o vazio da lista: {}",
+        ecra.linhas[11]
+    );
+    assert_eq!(ecra.linhas[23], "Esc volta à lista  ? ajuda");
+}
+
 /// Painel de detalhe: só existe a partir de 96×28 (o corte é medido em colunas
 /// × linhas, não em pixéis).
 #[test]
@@ -771,7 +827,7 @@ fn frame_120x32_detalhe() {
     let (_caminho, mut app) = app_com("detalhe", tarefas, lixo_do_frame(), Some(1));
     // A linha 22 deste frame é uma anotação do mockup (o painel é que está em
     // causa).
-    app.status = Status::Message(
+    app.status = Status::message(
         "A descrição do selecionado aparece no painel quando houver altura; a partir de 96×28"
             .to_owned(),
     );
@@ -798,7 +854,7 @@ fn frame_120x32_detalhe() {
 // ------------------------------------------------------- regras de desenho
 
 #[test]
-fn os_treze_goldens_estao_no_repo() {
+fn os_quatorze_goldens_estao_no_repo() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("frames");
@@ -822,6 +878,7 @@ fn os_treze_goldens_estao_no_repo() {
             "80x24-10-lixo.txt",
             "80x24-11-lixo-armado.txt",
             "80x24-12-lixo-transbordo.txt",
+            "80x24-13-lixo-vazio.txt",
             "80x24-2-busca-filtro.txt",
             "80x24-3-adicionar.txt",
             "80x24-4-adicionar-vazio.txt",
@@ -831,7 +888,7 @@ fn os_treze_goldens_estao_no_repo() {
             "80x24-8-vazio.txt",
             "80x24-9-sem-resultados.txt",
         ],
-        "os 13 goldens fazem parte do repositório e cada um tem o seu teste"
+        "os 14 goldens fazem parte do repositório e cada um tem o seu teste"
     );
 }
 
@@ -1033,6 +1090,56 @@ fn a_barra_do_desfazer_so_reduz_com_a_mensagem_de_remocao() {
         ecra.linhas[23],
         "a nova  e editar  Espaço concluir  d remover  u desfazer  / buscar  ? ajuda",
         "com o undo feito, a barra volta ao normal"
+    );
+}
+
+/// `a` + `Enter`: a seleção segue o `TodoId` devolvido pela `Db` (§5), não o
+/// índice final — a mensagem da linha 22 e a barra realçada apontam para a
+/// mesma linha. Com a lista maior que o corpo, a janela rola até ela.
+#[test]
+fn a_tarefa_nova_fica_selecionada_e_a_lista_rola_ate_ela() {
+    // 30 tarefas, todas `M`: com a ordem por prioridade (estável) a vista fica
+    // pela ordem de inserção e a tarefa nova entra em último — fora das 18
+    // linhas do corpo.
+    let tarefas: Vec<Todo> = (0..30)
+        .map(|i| {
+            let mut todo = Todo::try_new(format!("tarefa {i:02}")).expect("título do fixture");
+            todo.id = TodoId::from(format!("t{i}"));
+            todo.created_at = quando(i, 9, 0);
+            todo
+        })
+        .collect();
+    let (_caminho, mut app) = app_com("rolar-ate-a-nova", tarefas, Vec::new(), Some(0));
+
+    carrega(&mut app, 'a');
+    escreve(&mut app, "nova tarefa");
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.selected().expect("há uma tarefa selecionada").title,
+        "nova tarefa",
+        "a seleção fica na tarefa criada"
+    );
+    assert_eq!(
+        app.list_state.selected(),
+        Some(30),
+        "é o id devolvido pelo `add` que a põe lá, não um índice fixo"
+    );
+
+    let ecra = desenhar(&app, 80, 24);
+    let linha = ecra.linhas[3..21]
+        .iter()
+        .position(|linha| linha.contains("nova tarefa"))
+        .expect("a lista rolou até à tarefa nova, que não cabe nas 18 linhas do corpo");
+    let y = 3 + u16::try_from(linha).expect("linha do corpo");
+    assert!(
+        ecra.estilo(0, y).add_modifier.contains(Modifier::REVERSED),
+        "a barra realçada está na linha da tarefa nova"
+    );
+    assert!(
+        ecra.linhas[22].contains("Adicionada «nova tarefa»"),
+        "a mensagem da linha 22 e a barra concordam: {}",
+        ecra.linhas[22]
     );
 }
 

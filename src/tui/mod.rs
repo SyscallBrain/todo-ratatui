@@ -17,10 +17,21 @@ pub use event::{Action, InputMode, map_key};
 pub use ui::ui;
 
 use std::io;
+use std::time::{Duration, Instant};
 
 use crossterm::event::Event;
 
 use crate::core::Store;
+
+/// De quanto em quanto tempo o loop acorda sem evento nenhum.
+///
+/// É a única excepção à regra «sem `tick`» (§6 do desenho): sem ela a mensagem
+/// de acção da linha 22 ficava a tapar a descrição do selecionado até à tecla
+/// seguinte. O `poll` **espera** pelo evento — não é um ciclo a girar, em
+/// repouso não há CPU a queimar — e o `draw` continua no topo da iteração,
+/// portanto a expiração aparece no ciclo seguinte sem sinalizador nenhum de
+/// redesenho.
+const ESPERA: Duration = Duration::from_millis(250);
 
 /// Arranca o terminal, corre o loop e restaura o terminal.
 ///
@@ -51,8 +62,8 @@ pub fn run(store: Store) -> io::Result<()> {
     result
 }
 
-/// O loop de eventos: desenhar → ler uma tecla → aplicar → sair quando o `App`
-/// o pedir.
+/// O loop de eventos: desenhar → esperar uma tecla (ou 250 ms) → aplicar →
+/// expirar a mensagem de acção → sair quando o `App` o pedir.
 ///
 /// Só as teclas mexem em nada: um `Resize`/`FocusGained` cai no `if let` sem
 /// corpo e o ciclo volta a desenhar (é o que faz o ecrã acompanhar um
@@ -60,17 +71,27 @@ pub fn run(store: Store) -> io::Result<()> {
 ///
 /// **Não há gravação aqui.** O [`App::handle`] já grava depois de cada
 /// mutação — um `dirty`/`save` neste loop seria um segundo caminho de
-/// gravação para o mesmo dado.
+/// gravação para o mesmo dado — e o [`App::tick`] só expira a mensagem de
+/// acção, sem tocar nos dados.
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, store: Store) -> io::Result<()> {
     let mut app = App::new(store);
     loop {
         terminal.draw(|frame| ui::ui(frame, &app))?;
 
-        if let Event::Key(key) = crossterm::event::read()? {
-            // `Release`/`Repeat` não são filtrados aqui: `map_key` já os
-            // traduz em `Action::Ignore`.
+        // `poll` com prazo: com evento lê-se a tecla, sem evento o ciclo
+        // segue para o `tick` — é ele que faz a mensagem de acção sair sozinha
+        // aos 3 s. `Release`/`Repeat` não são filtrados aqui: `map_key` já os
+        // traduz em `Action::Ignore`. (O caminho é qualificado porque
+        // `crate::tui::event` sombreia `crossterm::event` neste módulo.)
+        if crossterm::event::poll(ESPERA)?
+            && let Event::Key(key) = crossterm::event::read()?
+        {
             app.on_key(key);
         }
+
+        // Corre nos dois caminhos (com e sem evento). Não grava nada: a
+        // gravação continua reservada ao `App::handle`.
+        app.tick(Instant::now());
 
         if app.should_quit() {
             return Ok(());

@@ -28,6 +28,13 @@ use super::event::{Action, InputMode, map_key};
 /// por gosto de confirmações.
 pub const ARM_WINDOW: Duration = Duration::from_secs(5);
 
+/// Quanto tempo uma mensagem de acção fica na linha 22 antes de sair sozinha
+/// (§4 do desenho).
+///
+/// Só as mensagens de acção a respeitam: o undo disponível e o aviso de
+/// transbordo nascem `sticky` e ficam até outra acção os substituir.
+pub const MESSAGE_TTL: Duration = Duration::from_secs(3);
+
 /// Marca da mensagem de remoção, que é a que fica enquanto houver undo (§4).
 ///
 /// É uma constante partilhada porque o T6 tem de reconhecê-la para reduzir a
@@ -55,13 +62,24 @@ fn next_filter(filter: Filter) -> Filter {
 }
 
 /// O que a linha 22 mostra (§4). A precedência — erro > mensagem > descrição do
-/// selecionado > vazio — é do T6; aqui só se guarda o que há para mostrar.
+/// selecionado > vazio — é do T6; aqui só se guarda o que há para mostrar, e o
+/// prazo de cada mensagem.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Status {
     #[default]
     Idle,
-    /// Mensagem de acção («Removida «X»    u para desfazer»).
-    Message(String),
+    /// Mensagem de acção («Removida «X»    u para desfazer»). Sai sozinha ao
+    /// fim de [`MESSAGE_TTL`] — ou na tecla seguinte, o que vier primeiro.
+    Message {
+        texto: String,
+        /// Instante em que a mensagem nasceu: é o que [`App::tick`] compara com
+        /// o instante injectado.
+        desde: Instant,
+    },
+    /// Mensagem que **não** expira: o undo disponível e o aviso de transbordo
+    /// (§4). O sinalizador é explícito — quem cria a mensagem é que sabe o
+    /// prazo — e não um `contains(UNDO_HINT)` sobre o texto.
+    Sticky(String),
     /// Erro: vermelho e com o prefixo «Erro:» no T6. Nunca expira sozinho.
     Error(String),
 }
@@ -71,7 +89,7 @@ impl Status {
     pub fn text(&self) -> Option<&str> {
         match self {
             Self::Idle => None,
-            Self::Message(text) | Self::Error(text) => Some(text),
+            Self::Message { texto, .. } | Self::Sticky(texto) | Self::Error(texto) => Some(texto),
         }
     }
 
@@ -80,12 +98,22 @@ impl Status {
         matches!(self, Self::Error(_))
     }
 
-    fn message(text: impl Into<String>) -> Self {
-        Self::Message(text.into())
+    /// Mensagem de acção: expira em [`MESSAGE_TTL`].
+    pub fn message(texto: impl Into<String>) -> Self {
+        Self::Message {
+            texto: texto.into(),
+            desde: Instant::now(),
+        }
     }
 
-    fn error(text: impl Into<String>) -> Self {
-        Self::Error(text.into())
+    /// Mensagem que fica enquanto for verdade: undo disponível ou aviso de
+    /// transbordo (§4).
+    pub fn sticky(texto: impl Into<String>) -> Self {
+        Self::Sticky(texto.into())
+    }
+
+    pub fn error(texto: impl Into<String>) -> Self {
+        Self::Error(texto.into())
     }
 }
 
@@ -246,6 +274,23 @@ impl App {
         action
     }
 
+    /// Expira a mensagem de acção ao fim de [`MESSAGE_TTL`] (§4).
+    ///
+    /// O instante entra por parâmetro — não se lê o relógio aqui dentro — para
+    /// o prazo poder ser testado sem TTY. O `tick` **não** grava nem marca nada
+    /// sujo: a gravação continua a ser só do [`App::handle`] e o redesenho do
+    /// loop, que desenha no topo de cada iteração.
+    pub fn tick(&mut self, agora: Instant) {
+        let expirada = match &self.status {
+            Status::Message { desde, .. } => agora.saturating_duration_since(*desde) >= MESSAGE_TTL,
+            // O undo e o aviso de transbordo ficam; o erro sai só com `Esc`.
+            Status::Idle | Status::Sticky(_) | Status::Error(_) => false,
+        };
+        if expirada {
+            self.status = Status::Idle;
+        }
+    }
+
     /// Aplica uma acção. É o único ponto que toca na `Db`.
     pub fn handle(&mut self, action: Action) {
         // Qualquer acção que não seja o `c` do lixo desarma a guarda (§5,
@@ -361,6 +406,22 @@ impl App {
             self.list_state.select(None);
         } else {
             self.list_state.select(Some(indice.min(self.visible().len() - 1)));
+        }
+    }
+
+    /// Põe a seleção na linha da tarefa indicada, se ela estiver na vista.
+    ///
+    /// É o `a` a cumprir o que a §5 promete: a seleção segue o `TodoId`
+    /// devolvido por `Store::add`, e não o índice final, porque com a ordem
+    /// activa a tarefa nova pode não ser a última da vista. A lista rola até à
+    /// seleção por si: o desenho recalcula a janela visível a partir dela.
+    fn select_todo(&mut self, id: &TodoId) {
+        let posicao = self.visible().iter().position(|todo| todo.id == *id);
+        match posicao {
+            Some(indice) => self.list_state.select(Some(indice)),
+            // A tarefa nova pode estar escondida pelo filtro activo (p. ex.
+            // `concluídas`): a seleção não pode ficar pendurada fora da vista.
+            None => self.clamp_selection(),
         }
     }
 
@@ -487,11 +548,14 @@ impl App {
             .unwrap_or_default();
         match self.store.remove(&id) {
             Ok(0) => {
-                self.status = Status::message(format!("Removida «{titulo}»    {UNDO_HINT}"));
+                // A mensagem de remoção fica enquanto houver undo (§4).
+                self.status = Status::sticky(format!("Removida «{titulo}»    {UNDO_HINT}"));
                 self.clamp_selection();
             }
             Ok(saidas) => {
-                self.status = Status::message(format!(
+                // Transbordo: nada sai em silêncio, e o aviso também não expira
+                // — é o único caminho em que algo saiu sem o utilizador pedir.
+                self.status = Status::sticky(format!(
                     "Aviso: {saidas} entradas antigas saíram do lixo (limite {})  ·  L ver o lixo",
                     crate::core::TRASH_LIMIT
                 ));
@@ -508,8 +572,8 @@ impl App {
             }
             Ok(resultado) if resultado.saidas_do_lixo > 0 => {
                 // O aviso de transbordo ganha à mensagem da acção: é o único
-                // caminho em que algo saiu sem o utilizador pedir.
-                self.status = Status::message(format!(
+                // caminho em que algo saiu sem o utilizador pedir — e fica.
+                self.status = Status::sticky(format!(
                     "Aviso: {} entradas antigas saíram do lixo (limite {})  ·  L ver o lixo",
                     resultado.saidas_do_lixo,
                     crate::core::TRASH_LIMIT
@@ -517,7 +581,8 @@ impl App {
                 self.clamp_selection();
             }
             Ok(resultado) => {
-                self.status = Status::message(format!(
+                // «u para desfazer»: enquanto o lote estiver no lixo, fica (§4).
+                self.status = Status::sticky(format!(
                     "{} concluídas para o lixo  ·  u para desfazer",
                     resultado.removidos
                 ));
@@ -544,7 +609,14 @@ impl App {
                 } else {
                     ""
                 };
-                self.status = Status::message(format!("{verbo} {n} tarefas{lote}{seguinte}"));
+                let texto = format!("{verbo} {n} tarefas{lote}{seguinte}");
+                // Com outro lote por repor a mensagem anuncia um undo: fica
+                // enquanto ele existir; sem isso é uma mensagem de acção.
+                self.status = if seguinte.is_empty() {
+                    Status::message(texto)
+                } else {
+                    Status::sticky(texto)
+                };
                 self.clamp_selection();
             }
             Err(OpsError::NothingToRestore) => {
@@ -701,9 +773,11 @@ impl App {
                     return;
                 }
                 match self.store.add(&texto) {
-                    Ok(_) => {
+                    Ok(id) => {
                         self.close_line();
-                        self.clamp_selection();
+                        // A seleção segue o id que a `Db` acabou de devolver, e
+                        // não o índice final (§5).
+                        self.select_todo(&id);
                         self.status = Status::message(format!("Adicionada «{}»", texto.trim()));
                     }
                     Err(err) => self.falha(err),
@@ -802,6 +876,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use chrono::Local;
     use crossterm::event::{KeyEventKind, KeyModifiers};
 
     use super::*;
@@ -1222,5 +1297,147 @@ mod tests {
         // E a TUI continua a responder à linha que está selecionada.
         tecla(&mut app, '1');
         assert_eq!(app.store().todos()[1].priority, Priority::High);
+    }
+
+    /// `a` + `Enter`: a seleção segue o id que o `add` devolveu, mesmo quando a
+    /// tarefa nova **não** é a última da vista (aqui entra a meio, entre uma
+    /// pendente e uma concluída).
+    #[test]
+    fn a_selecao_passa_para_a_tarefa_nova() {
+        let (_path, mut app) = app("a-seleciona", &["primeira", "segunda"]);
+        concluir(&mut app, "primeira");
+        assert_eq!(na_vista(&app), ["segunda", "primeira"]);
+
+        tecla(&mut app, 'a');
+        escreve(&mut app, "café");
+        entra(&mut app);
+
+        assert_eq!(
+            na_vista(&app),
+            ["segunda", "café", "primeira"],
+            "a nova entra entre a pendente e a concluída"
+        );
+        assert_eq!(
+            app.selected().map(|todo| todo.title.as_str()),
+            Some("café"),
+            "e é ela que fica selecionada"
+        );
+        assert_eq!(
+            app.list_state.selected(),
+            Some(1),
+            "a seleção é a linha dela, não o fim da lista"
+        );
+    }
+
+    /// A mensagem de acção sai sozinha ao fim de 3 s (§4) — sem esperar pela
+    /// tecla seguinte.
+    #[test]
+    fn a_mensagem_de_accao_expira_aos_tres_segundos() {
+        let (_path, mut app) = app("tick-mensagem", &["a", "b"]);
+        let t0 = Instant::now();
+
+        tecla(&mut app, 't'); // «2 tarefas concluídas»
+        assert!(app.status.text().is_some(), "a acção deixa mensagem");
+
+        app.tick(t0 + MESSAGE_TTL - Duration::from_millis(500));
+        assert!(
+            app.status.text().is_some(),
+            "dentro do prazo a mensagem fica: {:?}",
+            app.status
+        );
+
+        app.tick(t0 + MESSAGE_TTL + Duration::from_millis(200));
+        assert_eq!(
+            app.status,
+            Status::Idle,
+            "aos 3 s a mensagem de acção sai sozinha"
+        );
+    }
+
+    /// O undo disponível e o aviso de transbordo são `sticky`: ficam (§4).
+    #[test]
+    fn o_undo_nao_expira() {
+        let (_path, mut app) = app("tick-sticky", &["a", "b"]);
+        let t0 = Instant::now();
+
+        tecla(&mut app, 'd');
+        assert!(
+            app.status
+                .text()
+                .is_some_and(|texto| texto.contains(UNDO_HINT)),
+            "a remoção deixa a mensagem do undo: {:?}",
+            app.status
+        );
+        app.tick(t0 + Duration::from_secs(600));
+        assert!(
+            app.status
+                .text()
+                .is_some_and(|texto| texto.contains("Removida")),
+            "enquanto houver undo a mensagem fica: {:?}",
+            app.status
+        );
+    }
+
+    /// O lixo cheio: a remoção seguinte faz transbordar as entradas antigas e o
+    /// aviso é permanente (§4).
+    #[test]
+    fn o_aviso_de_transbordo_nao_expira() {
+        use crate::core::{TRASH_LIMIT, Trashed};
+
+        // A variável chama-se `tui` e não `app` porque o helper deste módulo se
+        // chama `app`: sem isso, a segunda chamada era a um `App` (E0618).
+        let (_path, mut tui) = app("tick-transbordo", &["unica"]);
+        {
+            let agora = Local::now();
+            let db = tui.store.db_mut();
+            db.trash = (0..TRASH_LIMIT)
+                .map(|i| Trashed {
+                    todo: Todo::try_new(format!("antiga {i}")).expect("título"),
+                    index: i,
+                    deleted_at: agora,
+                    batch: 0,
+                })
+                .collect();
+        }
+        let t0 = Instant::now();
+
+        tecla(&mut tui, 'd');
+        assert_eq!(tui.store().trash_len(), TRASH_LIMIT, "o lixo fica cheio");
+        assert!(
+            tui.status
+                .text()
+                .is_some_and(|texto| texto.contains("Aviso: 1 entradas")),
+            "nada sai em silêncio: {:?}",
+            tui.status
+        );
+
+        tui.tick(t0 + Duration::from_secs(600));
+        assert!(
+            tui.status
+                .text()
+                .is_some_and(|texto| texto.contains("Aviso:")),
+            "o aviso de transbordo é permanente: {:?}",
+            tui.status
+        );
+    }
+
+    /// O `tick` não é um segundo caminho de escrita: expira a mensagem e mais
+    /// nada (não marca nada sujo, não grava).
+    #[test]
+    fn o_tick_nao_toca_nos_dados_nem_no_ficheiro() {
+        let (path, mut app) = app("tick-sem-gravacao", &["a", "b"]);
+        tecla(&mut app, 't');
+        let antes = fs::read(&path).expect("ler o ficheiro");
+        let lista = na_db(&app);
+
+        app.tick(Instant::now() + Duration::from_secs(600));
+
+        assert_eq!(app.status, Status::Idle);
+        assert_eq!(na_db(&app), lista, "o `tick` não mexe na lista");
+        assert_eq!(
+            fs::read(&path).expect("reler o ficheiro"),
+            antes,
+            "nem grava: a gravação continua reservada ao `App::handle`"
+        );
     }
 }

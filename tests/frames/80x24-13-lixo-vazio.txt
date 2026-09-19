@@ -1,0 +1,24 @@
+todo-ratatui                                                      lixo: 0 de 100
+────────────────────────────────────────────────────────────────────────────────
+vista: lixo · ordem: removidas primeiro                                         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                  Lixo vazio.                                   
+                                                                                
+            O que removeres na lista fica aqui e repõe-se com Enter.            
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+                                                                                
+Esc volta à lista  ? ajuda                                                      

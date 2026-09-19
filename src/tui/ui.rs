@@ -1,7 +1,7 @@
 //! Desenho do ecrã: do [`App`] para o `Buffer`, sem estado próprio.
 //!
 //! A grelha é a do `@designer` (`design-system/todo-ratatui.md` §2–§4) e os
-//! testes de `tests/render.rs` comparam-na com os 13 *golden files* de
+//! testes de `tests/render.rs` comparam-na com os 14 *golden files* de
 //! `tests/frames/`, linha a linha. Nada aqui é uma segunda fonte de verdade:
 //! o que a spec fixa (colunas, cortes, barras de ajuda) está aqui uma única vez.
 //!
@@ -92,6 +92,9 @@ const BARRA_BUSCA: &str =
     "a nova  e editar  Espaço concluir  d remover  u desfazer  Esc limpar  ? ajuda";
 const BARRA_INPUT: &str = "Enter guarda  Esc cancela  Ctrl+C sai";
 const BARRA_LIXO: &str = "Enter restaura  c esvaziar o lixo  Esc volta  ? ajuda";
+/// Com o lixo vazio só resta sair dele: as teclas da lista vazia seriam teclas
+/// mortas nesta vista (§5, frame `80x24-13-lixo-vazio`).
+const BARRA_LIXO_VAZIO: &str = "Esc volta à lista  ? ajuda";
 const BARRA_ARMADO: &str = "c confirmar  Esc cancela";
 const BARRA_ERRO: &str = "Esc  limpar a mensagem    q  sair";
 /// A mensagem de remoção fica enquanto houver undo: a barra reduz-se à única
@@ -240,9 +243,16 @@ fn cabecalho(app: &App, largura: u16) -> Line<'static> {
 /// termo de busca e o indicador do lixo.
 fn linha_de_estado(app: &App, largura: u16) -> Line<'static> {
     if matches!(app.mode, InputMode::Trash) {
+        // O rótulo é o cabeçalho da coluna da data: com o lixo vazio não há
+        // coluna nenhuma para nomear (§4, frame `80x24-13-lixo-vazio`).
+        let etiqueta = if app.store().trash_len() == 0 {
+            Span::raw("")
+        } else {
+            Span::raw(ETIQUETA_REMOVIDA)
+        };
         return barra(
             Span::raw("vista: lixo · ordem: removidas primeiro"),
-            Span::raw(ETIQUETA_REMOVIDA),
+            etiqueta,
             largura,
         );
     }
@@ -394,10 +404,27 @@ fn lista(app: &App, largura: u16) -> List<'static> {
     List::new(itens).highlight_style(SELEC)
 }
 
-/// Centro da lista quando não há nada para mostrar (§4): «Sem tarefas.» ou o
-/// texto que nomeia o filtro e a busca activos — dois estados diferentes.
+/// Está-se na vista do lixo e o lixo está vazio (frame `80x24-13-lixo-vazio`)?
+///
+/// É o estado que decide o corpo e o rodapé: dentro do lixo o contexto é o
+/// lixo, logo o vazio do lixo tem **precedência** sobre os vazios da lista
+/// (§4).
+fn lixo_vazio(app: &App) -> bool {
+    matches!(app.mode, InputMode::Trash) && app.store().trash_len() == 0
+}
+
+/// Centro da lista quando não há nada para mostrar (§4): «Lixo vazio.» na vista
+/// do lixo, «Sem tarefas.» ou o texto que nomeia o filtro e a busca activos —
+/// três estados diferentes.
 fn vazio(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> {
-    let (primeira, segunda) = if app.store().todos().is_empty() {
+    let (primeira, segunda) = if lixo_vazio(app) {
+        // Não é o vazio da lista com outro texto: nomear um filtro que aqui
+        // não está activo e anunciar o `a` seria anunciar uma tecla morta (§5).
+        (
+            "Lixo vazio.".to_owned(),
+            "O que removeres na lista fica aqui e repõe-se com Enter.".to_owned(),
+        )
+    } else if app.store().todos().is_empty() {
         (
             "Sem tarefas.".to_owned(),
             "a  adicionar a primeira".to_owned(),
@@ -490,7 +517,11 @@ fn mensagem(app: &App, largura: u16, com_painel: bool) -> Line<'static> {
     }
     match &app.status {
         Status::Error(texto) => Line::from(Span::styled(abreviar(texto, util), ERR)),
-        Status::Message(texto) => Line::from(Span::styled(abreviar(texto, util), FG)),
+        // Uma mensagem que não expira desenha-se como qualquer outra: o
+        // `sticky` decide o prazo, não o estilo (§4).
+        Status::Message { texto, .. } | Status::Sticky(texto) => {
+            Line::from(Span::styled(abreviar(texto, util), FG))
+        }
         Status::Idle if matches!(app.mode, InputMode::Trash) => pre_visualizacao_do_lixo(app, util),
         Status::Idle if com_painel => Line::default(),
         Status::Idle => match app.selected() {
@@ -563,7 +594,11 @@ fn barra_de_ajuda(app: &App) -> Line<'static> {
     } else if app.mode.is_text() {
         BARRA_INPUT
     } else if matches!(app.mode, InputMode::Trash) {
-        if app.armed() {
+        // O lixo vazio decide **antes** de `BARRA_LIXO`: ali `Enter`, `Espaço`
+        // e `c` são teclas mortas (§5).
+        if lixo_vazio(app) {
+            BARRA_LIXO_VAZIO
+        } else if app.armed() {
             BARRA_ARMADO
         } else {
             BARRA_LIXO
