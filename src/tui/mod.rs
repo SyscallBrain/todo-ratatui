@@ -10,13 +10,17 @@
 //!
 //! [`theme`] é a quarta peça, e é só dados: os quatro temas com os seus papéis
 //! de cor e o modo de cor do terminal. O desenho lê-os, o `core` nunca os vê.
+//! [`arranque`] é a decisão que vem de fora: qual dos quatro temas, com que
+//! modo de cor e com que ficheiro de preferências a sessão arranca.
 
 pub mod app;
+pub mod arranque;
 pub mod event;
 pub mod theme;
 pub mod ui;
 
 pub use app::{App, Status};
+pub use arranque::{Ambiente, Opcoes, Resolucao};
 pub use event::{Action, InputMode, map_key};
 pub use theme::{ModoCor, Theme};
 pub use ui::ui;
@@ -49,7 +53,13 @@ const ESPERA: Duration = Duration::from_millis(250);
 /// Recebe o [`Store`] já aberto: falhar a **abrir** recusa o arranque em
 /// `main.rs` (adenda 2 do ADR) e nunca chega aqui com uma lista vazia em
 /// memória a caminho de sobrescrever o ficheiro.
-pub fn run(store: Store) -> io::Result<()> {
+///
+/// Recebe a [`Resolucao`] do arranque (T4) e não três argumentos soltos: o
+/// tema, o caminho das preferências e os avisos são decididos num sítio só
+/// ([`arranque::resolver`]), e é essa decisão inteira que desce para aqui — o
+/// `main.rs` já a imprimiu antes de o ecrã alternativo ligar
+/// ([`Resolucao::avisar`]).
+pub fn run(store: Store, sessao: &Resolucao) -> io::Result<()> {
     // A falha de arranque é distinguida da falha a meio do loop: quem lê a
     // mensagem (uma `pipe`, um cron, um terminal sem TTY) precisa de saber que
     // o problema é não haver terminal interactivo — e não que a TUI tenha
@@ -62,7 +72,7 @@ pub fn run(store: Store) -> io::Result<()> {
             format!("não há terminal interactivo para a TUI: {err}"),
         )
     })?;
-    let result = event_loop(&mut terminal, store);
+    let result = event_loop(&mut terminal, store, sessao);
     ratatui::restore();
     result
 }
@@ -78,8 +88,12 @@ pub fn run(store: Store) -> io::Result<()> {
 /// mutação — um `dirty`/`save` neste loop seria um segundo caminho de
 /// gravação para o mesmo dado — e o [`App::tick`] só expira a mensagem de
 /// acção, sem tocar nos dados.
-fn event_loop(terminal: &mut ratatui::DefaultTerminal, store: Store) -> io::Result<()> {
-    let mut app = App::new(store);
+fn event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    store: Store,
+    sessao: &Resolucao,
+) -> io::Result<()> {
+    let mut app = App::com_tema(store, sessao.tema, sessao.config_path.clone());
     loop {
         terminal.draw(|frame| ui::ui(frame, &app))?;
 

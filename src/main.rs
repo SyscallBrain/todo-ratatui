@@ -3,45 +3,81 @@ use std::process::ExitCode;
 
 use todo_ratatui::core::{Store, backup_path_for, resolve_path};
 use todo_ratatui::tui;
+use todo_ratatui::tui::arranque::{self, Opcoes};
 
 const USAGE: &str = "\
 todo-ratatui — TODO list em TUI
 
 USO:
-    todo-ratatui [--db <caminho>]
+    todo-ratatui [--db <caminho>] [--theme <slug>] [--color <auto|rgb|ansi>]
+                 [--config <caminho>]
 
 OPÇÕES:
-    --db <caminho>   Ficheiro da base de dados (precede TODO_RATATUI_DB)
-    -h, --help       Esta ajuda
+    --db <caminho>      Ficheiro da base de dados (precede TODO_RATATUI_DB)
+    --theme <slug>      Tema do ecrã: tokyo-night (por omissão),
+                        tokyo-night-storm, tokyo-night-moon, classico
+                        (precede TODO_RATATUI_THEME e o config.json)
+    --color <modo>      auto (por omissão), rgb ou ansi (precede
+                        TODO_RATATUI_COLOR); em ansi um tema com fundo passa a
+                        classico, só nesta sessão
+    --config <caminho>  Ficheiro da preferência de tema, onde a caixa de temas
+                        grava (precede TODO_RATATUI_CONFIG)
+    -h, --help          Esta ajuda
+
+O tema vem de --theme, senão TODO_RATATUI_THEME, senão o config.json, senão
+tokyo-night. Um valor desconhecido avisa e não impede abrir a lista, e nem a
+flag nem a variável gravam nada: só o Enter da caixa de temas (T) grava.
 ";
 
 struct Args {
     db: Option<PathBuf>,
+    opcoes: Opcoes,
     help: bool,
 }
 
 fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut args = Args {
         db: None,
+        opcoes: Opcoes::default(),
         help: false,
     };
     let mut argv = argv.into_iter();
     while let Some(arg) = argv.next() {
-        match arg.as_str() {
+        // `--theme=x` e `--theme x` valem o mesmo: separa-se no primeiro `=` e
+        // o valor é o resto (sem ele, o argumento seguinte).
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, valor)) => (flag, Some(valor)),
+            None => (arg.as_str(), None),
+        };
+        match flag {
             "-h" | "--help" => args.help = true,
-            "--db" => {
-                let value = argv
-                    .next()
-                    .ok_or_else(|| "--db precisa de um caminho".to_owned())?;
-                args.db = Some(PathBuf::from(value));
-            }
-            other if other.starts_with("--db=") => {
-                args.db = Some(PathBuf::from(&other["--db=".len()..]));
+            "--db" => args.db = Some(PathBuf::from(valor(flag, inline, &mut argv)?)),
+            "--theme" => args.opcoes.theme = Some(valor(flag, inline, &mut argv)?),
+            "--color" => args.opcoes.color = Some(valor(flag, inline, &mut argv)?),
+            "--config" => {
+                args.opcoes.config = Some(PathBuf::from(valor(flag, inline, &mut argv)?));
             }
             other => return Err(format!("argumento desconhecido: {other}")),
         }
     }
     Ok(args)
+}
+
+/// Valor de uma flag: o que veio depois do `=` ou o argumento seguinte.
+///
+/// Um `=` a mais fica dentro do valor (não há valores com `=` hoje, e
+/// adivinhar onde cortar era pior do que dizer o que falta).
+fn valor(
+    flag: &str,
+    inline: Option<&str>,
+    argv: &mut impl Iterator<Item = String>,
+) -> Result<String, String> {
+    match inline {
+        Some(valor) => Ok(valor.to_owned()),
+        None => argv
+            .next()
+            .ok_or_else(|| format!("{flag} precisa de um valor")),
+    }
 }
 
 fn main() -> ExitCode {
@@ -81,7 +117,15 @@ fn main() -> ExitCode {
         }
     };
 
-    match tui::run(store) {
+    // A preferência resolve-se **depois** de a base de dados abrir: uma recusa
+    // de arranque sai com a mensagem de hoje, sem avisos de tema pelo meio, e a
+    // lista abre na mesma com uma preferência estragada (ADR §Decisão 7).
+    let sessao = arranque::resolver(&args.opcoes, &arranque::Ambiente::do_processo());
+    // Antes do ecrã alternativo: depois do `try_init` a mensagem ficava por
+    // baixo do primeiro desenho.
+    sessao.avisar();
+
+    match tui::run(store, &sessao) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("erro: {err}");

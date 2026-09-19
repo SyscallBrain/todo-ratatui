@@ -8,7 +8,7 @@
 //! Tudo é testável sem TTY: o [`Store`] dos testes vive num directório
 //! temporário e as teclas são `KeyEvent::new(…)`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -148,6 +148,13 @@ pub struct App {
     /// mantém `App::new(store)` com uma assinatura só (o arranque passa a
     /// escolha por cima, quando a tem).
     pub theme: &'static Theme,
+    /// Ficheiro de preferências onde a caixa de temas grava o *slug* (T5).
+    ///
+    /// `None` quando não há caminho conhecido — o `App` dos testes, ou um
+    /// sistema sem `XDG_CONFIG_HOME` nem `HOME`: aí o tema escolhe-se na mesma
+    /// nesta sessão e o `T5` diz que não há onde gravar, em vez de inventar um
+    /// caminho no `~/.config` real.
+    pub config_path: Option<PathBuf>,
     buffer: Vec<char>,
     cursor: usize,
     /// Em `Editing`: o `Enter` grava a descrição em vez do título.
@@ -161,10 +168,27 @@ pub struct App {
 }
 
 impl App {
-    /// Arranca com a lista na ordem por omissão e a primeira tarefa
-    /// selecionada.
+    /// Arranca com a lista na ordem por omissão, a primeira tarefa selecionada
+    /// e o tema por omissão — e **sem** ficheiro de preferências.
+    ///
+    /// É o construtor dos testes: continua a ter a assinatura que os três
+    /// sítios de construção da v1.0.1 esperam (`src/tui/mod.rs`,
+    /// `src/tui/app.rs`, `tests/render.rs`) e não tem por onde gravar, logo
+    /// nenhum teste escreve no `~/.config` real. O arranque a sério usa
+    /// [`App::com_tema`].
     #[must_use]
     pub fn new(store: Store) -> Self {
+        Self::com_tema(store, Theme::default(), None)
+    }
+
+    /// O construtor do arranque: o tema e o caminho do `config.json` já
+    /// resolvidos por [`super::arranque::resolver`] (T4).
+    ///
+    /// O [`App`] guarda os dois porque a caixa de temas do T5 precisa deles
+    /// para gravar — e só ela grava: nem `--theme` nem a variável de ambiente
+    /// escrevem no ficheiro (ADR §Decisão 2).
+    #[must_use]
+    pub fn com_tema(store: Store, theme: &'static Theme, config_path: Option<PathBuf>) -> Self {
         let mut app = Self {
             store,
             list_state: ListState::default(),
@@ -175,7 +199,8 @@ impl App {
             sort: SortKey::Priority,
             // O tema por omissão é o primeiro do catálogo (Tokyo Night): quem
             // arranca sem escolher vê o mesmo que `Theme::default()` diz.
-            theme: Theme::default(),
+            theme,
+            config_path,
             buffer: Vec::new(),
             cursor: 0,
             editing_description: false,
