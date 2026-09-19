@@ -7,13 +7,18 @@
 //! estado e as teclas ([`app::App`] + [`event::map_key`]) e o desenho
 //! ([`ui::ui`]). O `App` é **possuído pelo loop** — a camada de cima
 //! (`main.rs`) entrega um [`Store`] aberto e não volta a tocar nos dados.
+//!
+//! [`theme`] é a quarta peça, e é só dados: os quatro temas com os seus papéis
+//! de cor e o modo de cor do terminal. O desenho lê-os, o `core` nunca os vê.
 
 pub mod app;
 pub mod event;
+pub mod theme;
 pub mod ui;
 
 pub use app::{App, Status};
 pub use event::{Action, InputMode, map_key};
+pub use theme::{ModoCor, Theme};
 pub use ui::ui;
 
 use std::io;
