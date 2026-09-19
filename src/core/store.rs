@@ -15,12 +15,13 @@
 use std::env;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
+use super::atomic;
 use super::model::Todo;
 
 /// Versão do formato em disco. O lixo (`trash`) entrou no schema 2.
@@ -202,11 +203,12 @@ pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf, StoreError> {
 ///
 /// Existe como função livre porque há quem precise de o nomear **sem** ter um
 /// [`Store`] aberto: é o caso da mensagem de recusa de arranque em `main.rs`,
-/// que corre precisamente quando a abertura falhou. A convenção do nome fica
-/// num só sítio — [`Store::backup_path`] usa esta função.
+/// que corre precisamente quando a abertura falhou. A convenção do nome vive
+/// em [`atomic::backup_path_for`], que é quem efectivamente roda o ficheiro —
+/// [`Store::backup_path`] e esta função usam-na, para não haver duas regras.
 #[must_use]
 pub fn backup_path_for(path: &Path) -> PathBuf {
-    path.with_file_name(format!("{DB_FILE_NAME}.bak"))
+    atomic::backup_path_for(path)
 }
 
 /// Base de dados aberta em memória e ligada a um ficheiro.
@@ -303,16 +305,14 @@ impl Store {
             .with_file_name(format!("{DB_FILE_NAME}.pre-restore"))
     }
 
-    fn tmp_path(&self) -> PathBuf {
-        self.path.with_file_name(format!("{DB_FILE_NAME}.tmp"))
-    }
-
-    /// Grava a base de dados em memória: `tmp` + `fsync` + rotação do `.bak` +
-    /// `rename`.
+    /// Grava a base de dados em memória.
     ///
-    /// O `rename` é atómico: ou o ficheiro fica inteiro e novo, ou fica o
-    /// antigo. O `.bak` é a geração anterior, para corrupção/schema — não é
-    /// mecanismo de undo (esse é o `trash`).
+    /// A escrita é a partilhada com o `config` ([`atomic::write_atomic`]): o
+    /// temporário no mesmo directório é escrito por inteiro e sincronizado, a
+    /// geração anterior é rodada para o `.bak` e o temporário ocupa o lugar do
+    /// destino — sempre por `rename`, logo ou o ficheiro fica inteiro e novo,
+    /// ou fica o antigo. O `.bak` é a geração anterior, para corrupção/schema —
+    /// não é mecanismo de undo (esse é o `trash`).
     pub fn save(&self) -> Result<(), StoreError> {
         let mut json = serde_json::to_vec_pretty(&self.db).map_err(|source| StoreError::Json {
             path: self.path.clone(),
@@ -328,34 +328,7 @@ impl Store {
             })?;
         }
 
-        let tmp = self.tmp_path();
-        {
-            let mut file = File::create(&tmp).map_err(|source| StoreError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-            file.write_all(&json).map_err(|source| StoreError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-            file.sync_all().map_err(|source| StoreError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-        }
-
-        // Rotação antes do rename final: o `.bak` fica com a geração anterior
-        // e nunca há um instante em que o `.bak` esteja meio-escrito (é sempre
-        // o resultado de um `rename`, não de uma cópia).
-        if self.path.is_file() {
-            let bak = self.backup_path();
-            fs::rename(&self.path, &bak).map_err(|source| StoreError::Io {
-                path: bak.clone(),
-                source,
-            })?;
-        }
-
-        fs::rename(&tmp, &self.path).map_err(|source| StoreError::Io {
+        atomic::write_atomic(&self.path, &json).map_err(|source| StoreError::Io {
             path: self.path.clone(),
             source,
         })?;
