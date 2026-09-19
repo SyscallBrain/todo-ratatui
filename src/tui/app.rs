@@ -15,8 +15,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::core::{
-    Config, Counts, Filter, OpsError, Priority, SortKey, Store, Todo, TodoId, export_csv_to_path,
-    import_from_path,
+    CategoryFilter, Config, Counts, Filter, OpsError, Priority, SortKey, Store, Todo, TodoId,
+    export_csv_to_path, import_from_path,
 };
 
 use super::event::{Action, InputMode, map_key};
@@ -340,14 +340,28 @@ impl App {
         }
         let ids = match self.filter {
             // Pendentes primeiro, concluídas no fim: dois grupos, cada um pela
-            // ordem escolhida (o `view` é estável).
+            // ordem escolhida (o `view` é estável). O eixo da categoria ainda
+            // não é escolhido por ninguém no ecrã: passa `Todas` (o T4 traz o
+            // `F` e o filtro da `App`).
             Filter::All => {
-                let mut ids = self.store.view(Filter::Active, self.sort, &self.query);
-                ids.extend(self.store.view(Filter::Done, self.sort, &self.query));
+                let mut ids = self.store.view(
+                    Filter::Active,
+                    self.sort,
+                    CategoryFilter::Todas,
+                    &self.query,
+                );
+                ids.extend(self.store.view(
+                    Filter::Done,
+                    self.sort,
+                    CategoryFilter::Todas,
+                    &self.query,
+                ));
                 ids
             }
             // Estes dois filtros já são um grupo homogéneo: não há o que dividir.
-            filter => self.store.view(filter, self.sort, &self.query),
+            filter => self
+                .store
+                .view(filter, self.sort, CategoryFilter::Todas, &self.query),
         };
         ids.iter().filter_map(|id| self.store.find(id)).collect()
     }

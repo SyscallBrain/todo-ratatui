@@ -14,7 +14,7 @@ use std::fmt;
 
 use chrono::Local;
 
-use super::model::{Priority, Todo, TodoError, TodoId};
+use super::model::{Category, CategoryId, Priority, Todo, TodoError, TodoId};
 use super::store::{Db, Store, StoreError, Trashed};
 
 /// Limite de entradas no lixo.
@@ -30,6 +30,16 @@ pub enum OpsError {
     /// removida noutro sítio).
     NotFound(TodoId),
     EmptyTitle,
+    /// Categoria inexistente — o mesmo caso de [`Self::NotFound`], para o outro
+    /// identificador. Não é uma variante `NotFound(String)`: o erro continua a
+    /// dizer de que espécie é o `id` que falhou, e o `TodoId` do [`Self::NotFound`]
+    /// não serve para uma categoria.
+    CategoryNotFound(CategoryId),
+    /// Nome de categoria vazio (depois do `trim`).
+    EmptyName,
+    /// Já existe uma categoria com este nome (comparação *case-insensitive*).
+    /// Carrega o **nome já existente**, que é o que explica a colisão.
+    DuplicateName(String),
     /// Não há nada no lixo para restaurar.
     NothingToRestore,
     Persist(StoreError),
@@ -40,6 +50,13 @@ impl fmt::Display for OpsError {
         match self {
             Self::NotFound(id) => write!(f, "não existe nenhuma tarefa com o id {id}"),
             Self::EmptyTitle => TodoError::EmptyTitle.fmt(f),
+            Self::CategoryNotFound(id) => {
+                write!(f, "não existe nenhuma categoria com o id {id}")
+            }
+            Self::EmptyName => f.write_str("o nome da categoria não pode estar vazio"),
+            Self::DuplicateName(name) => {
+                write!(f, "já existe uma categoria com o nome «{name}»")
+            }
             Self::NothingToRestore => f.write_str("não há nada no lixo para restaurar"),
             Self::Persist(err) => write!(f, "{err}"),
         }
@@ -330,6 +347,128 @@ impl Store {
         }
         self.save()?;
         Ok(restaurados)
+    }
+
+    /// A categoria com este `id`, para escrita.
+    ///
+    /// Espelha o [`Store::find_mut`] das tarefas: as operações de categoria
+    /// referem-se ao `id`, nunca ao índice na lista (que muda com uma
+    /// eliminação).
+    fn categoria_mut(&mut self, id: &CategoryId) -> Option<&mut Category> {
+        self.db_mut()
+            .categories
+            .iter_mut()
+            .find(|categoria| &categoria.id == id)
+    }
+
+    /// Valida o nome de uma categoria e devolve-o já limpo (`trim`).
+    ///
+    /// `excepto` é a categoria que pode ficar com o nome — a que está a ser
+    /// renomeada. Sem esse parâmetro, corrigir a capitalização de «casa» para
+    /// «Casa» seria recusado por «o nome já existir», quando é o mesmo objecto.
+    fn validar_nome(&self, name: &str, excepto: Option<&CategoryId>) -> Result<String, OpsError> {
+        let nome = name.trim();
+        if nome.is_empty() {
+            return Err(OpsError::EmptyName);
+        }
+        // A regra é a da busca: minúsculas dos dois lados (`query::contem`).
+        let alvo = nome.to_lowercase();
+        let repetida = self.categories().iter().find(|categoria| {
+            categoria.name.to_lowercase() == alvo && excepto != Some(&categoria.id)
+        });
+        match repetida {
+            Some(categoria) => Err(OpsError::DuplicateName(categoria.name.clone())),
+            None => Ok(nome.to_owned()),
+        }
+    }
+
+    /// Cria uma categoria com este nome e grava; devolve o `id` novo.
+    ///
+    /// `&mut self` (e não `&self`) porque a criação grava, como o
+    /// [`Store::add`]: uma categoria em RAM que não chegasse ao ficheiro
+    /// desapareceria no arranque seguinte, deixando tarefas com referências
+    /// pendentes.
+    pub fn add_category(&mut self, name: &str) -> Result<CategoryId, OpsError> {
+        let nome = self.validar_nome(name, None)?;
+        let categoria = Category {
+            id: CategoryId::new(),
+            name: nome,
+        };
+        let id = categoria.id.clone();
+        self.db_mut().categories.push(categoria);
+        self.save()?;
+        Ok(id)
+    }
+
+    /// Renomeia uma categoria e grava.
+    ///
+    /// O `id` **não** muda e não há nada a cascatear: nenhuma tarefa guarda o
+    /// nome da categoria (ADR §Decisão 1 e 2) — é exactamente isso que torna o
+    /// *rename* barato.
+    pub fn rename_category(&mut self, id: &CategoryId, name: &str) -> Result<(), OpsError> {
+        let nome = self.validar_nome(name, Some(id))?;
+        let categoria = self
+            .categoria_mut(id)
+            .ok_or_else(|| OpsError::CategoryNotFound(id.clone()))?;
+        categoria.name = nome;
+        self.save()?;
+        Ok(())
+    }
+
+    /// Elimina a categoria e tira a atribuição de **todas** as tarefas que
+    /// apontavam para ela, devolvendo o total afectado (lista + lixo).
+    ///
+    /// As tarefas ficam — sem categoria: elimina-se um metadado, não trabalho
+    /// (ADR §Decisão 5). O lixo conta para o total e é limpo como a lista:
+    /// uma entrada do lixo que ficasse a apontar para a categoria eliminada
+    /// voltaria à lista, pelo `u`, com uma referência pendente.
+    pub fn delete_category(&mut self, id: &CategoryId) -> Result<usize, OpsError> {
+        let posicao = self
+            .db()
+            .categories
+            .iter()
+            .position(|categoria| &categoria.id == id)
+            .ok_or_else(|| OpsError::CategoryNotFound(id.clone()))?;
+
+        let db = self.db_mut();
+        db.categories.remove(posicao);
+        // Uma só passagem pelas **duas** listas: é aqui que é fácil limpar a
+        // lista e esquecer o lixo.
+        let mut afectadas = 0;
+        for todo in db
+            .todos
+            .iter_mut()
+            .chain(db.trash.iter_mut().map(|entrada| &mut entrada.todo))
+        {
+            if todo.category_id.as_ref() == Some(id) {
+                todo.category_id = None;
+                afectadas += 1;
+            }
+        }
+        self.save()?;
+        Ok(afectadas)
+    }
+
+    /// Atribui a categoria à tarefa — ou tira-lhe a atribuição, com `None` — e
+    /// grava.
+    ///
+    /// Valida **antes** de tocar na `Db`: uma categoria inexistente (ou uma
+    /// tarefa inexistente) é erro e a `Db` fica exactamente como estava, sem
+    /// meia atribuição.
+    pub fn assign_category(
+        &mut self,
+        todo: &TodoId,
+        categoria: Option<&CategoryId>,
+    ) -> Result<(), OpsError> {
+        // Uma categoria que não existe: erro e `Db` intacta. O `if let` com
+        // `&&` é a forma que o clippy pede (edition 2024 tem *let chains*).
+        if let Some(id) = categoria
+            && self.category(id).is_none()
+        {
+            return Err(OpsError::CategoryNotFound(id.clone()));
+        }
+        let alvo = categoria.cloned();
+        self.mutate(todo, |todo| todo.category_id = alvo)
     }
 }
 
@@ -673,5 +812,249 @@ mod tests {
         // O `u` continua a repor o lote — aqui, o que dele resta.
         assert_eq!(store.restore_last_batch().unwrap(), 1);
         assert_eq!(titulos(&store), ["feita 1", "pendente", "feita 2"]);
+    }
+
+    /// Quantas referências à categoria `id` existem na `Db` **inteira** — a
+    /// lista e o lixo. É a asserção que o invariante da eliminação pede: sobre
+    /// a `Db` toda, não sobre uma amostra (a metade esquecida é sempre a do
+    /// lixo).
+    fn referencias_a(db: &Db, id: &CategoryId) -> usize {
+        db.todos
+            .iter()
+            .chain(db.trash.iter().map(|entrada| &entrada.todo))
+            .filter(|todo| todo.category_id.as_ref() == Some(id))
+            .count()
+    }
+
+    #[test]
+    fn categoria_valida_o_nome_e_persiste() {
+        let (path, mut store) = store("categoria-add");
+        let trabalho = store.add_category("  Trabalho  ").expect("criar");
+        assert_eq!(
+            store.category(&trabalho).unwrap().name,
+            "Trabalho",
+            "o nome é limpo (`trim`)"
+        );
+
+        let erro = store.add_category("   ").expect_err("nome vazio");
+        assert!(matches!(erro, OpsError::EmptyName));
+        assert_eq!(erro.to_string(), "o nome da categoria não pode estar vazio");
+        assert!(matches!(store.add_category(""), Err(OpsError::EmptyName)));
+
+        let erro = store.add_category("trabalho").expect_err("nome repetido");
+        assert!(matches!(erro, OpsError::DuplicateName(_)));
+        assert!(
+            erro.to_string().contains("Trabalho"),
+            "a mensagem diz o nome em causa: {erro}"
+        );
+        assert_eq!(
+            store.categories().len(),
+            1,
+            "nenhum dos erros criou categoria"
+        );
+        assert_eq!(store.categories()[0].name, "Trabalho", "nem lhe tocou");
+
+        let recarregado = Store::open(&path).expect("reabrir");
+        assert_eq!(recarregado.categories().len(), 1, "gravou imediatamente");
+        assert_eq!(recarregado.categories()[0].id, trabalho);
+        assert_eq!(recarregado.categories()[0].name, "Trabalho");
+    }
+
+    #[test]
+    fn rename_mantem_o_id_e_recusa_nome_repetido() {
+        let (path, mut store) = store("categoria-rename");
+        let trabalho = store.add_category("Trabalho").unwrap();
+        let casa = store.add_category("Casa").unwrap();
+        let tarefa = store.add("comprar café").unwrap();
+        store.assign_category(&tarefa, Some(&trabalho)).unwrap();
+
+        store
+            .rename_category(&trabalho, "  Trabalho pessoal  ")
+            .expect("renomear");
+        assert_eq!(
+            store.category(&trabalho).unwrap().name,
+            "Trabalho pessoal",
+            "o `id` não muda: a consulta pelo id antigo continua a responder"
+        );
+        assert_eq!(
+            store.find(&tarefa).unwrap().category_id.as_ref(),
+            Some(&trabalho),
+            "não há nome nenhum dentro da tarefa, logo não há cascata"
+        );
+        assert_eq!(
+            store.categories()[0].name,
+            "Trabalho pessoal",
+            "o rename não reordena as categorias"
+        );
+
+        // Um nome que já existe **noutra** categoria é recusado, e nada muda.
+        let erro = store
+            .rename_category(&casa, "trabalho PESSOAL")
+            .expect_err("nome repetido");
+        assert!(matches!(erro, OpsError::DuplicateName(_)));
+        assert!(erro.to_string().contains("Trabalho pessoal"));
+        assert_eq!(store.category(&casa).unwrap().name, "Casa");
+
+        // O nome da **própria** categoria, noutra capitalização, é permitido:
+        // é a colisão consigo mesma que o `excepto` exclui.
+        store.rename_category(&casa, "CASA").expect("corrigir");
+        assert_eq!(store.category(&casa).unwrap().name, "CASA");
+
+        assert!(matches!(
+            store.rename_category(&casa, "   "),
+            Err(OpsError::EmptyName)
+        ));
+        assert_eq!(
+            store.category(&casa).unwrap().name,
+            "CASA",
+            "o erro não alterou"
+        );
+
+        let antes = store.db().clone();
+        let fantasma = CategoryId::new();
+        let erro = store
+            .rename_category(&fantasma, "Nova")
+            .expect_err("categoria inexistente");
+        assert!(matches!(erro, OpsError::CategoryNotFound(_)));
+        assert!(
+            erro.to_string().contains("não existe nenhuma categoria"),
+            "mensagem própria, no molde do erro de tarefa: {erro}"
+        );
+        assert_eq!(
+            *store.db(),
+            antes,
+            "categoria inexistente não altera a `Db`"
+        );
+
+        let recarregado = Store::open(&path).unwrap();
+        assert_eq!(
+            recarregado.category(&trabalho).unwrap().name,
+            "Trabalho pessoal"
+        );
+        assert_eq!(recarregado.category(&casa).unwrap().name, "CASA");
+    }
+
+    #[test]
+    fn delete_category_limpa_as_referencias_da_lista_e_do_lixo() {
+        let (path, mut store) = store("categoria-delete");
+        let trabalho = store.add_category("Trabalho").unwrap();
+        let casa = store.add_category("Casa").unwrap();
+
+        // Três na categoria, na lista, e uma no lixo — mais uma noutra
+        // categoria e outra sem categoria: as duas últimas provam que a
+        // limpeza é selectiva.
+        for titulo in ["a", "b", "c"] {
+            let id = store.add(titulo).unwrap();
+            store.assign_category(&id, Some(&trabalho)).unwrap();
+        }
+        let no_lixo = store.add("d").unwrap();
+        store.assign_category(&no_lixo, Some(&trabalho)).unwrap();
+        store.remove(&no_lixo).unwrap();
+        let outra = store.add("e").unwrap();
+        store.assign_category(&outra, Some(&casa)).unwrap();
+        let sem = store.add("f").unwrap();
+
+        assert_eq!(
+            store.delete_category(&trabalho).expect("eliminar"),
+            4,
+            "3 na lista + 1 no lixo"
+        );
+
+        assert!(store.category(&trabalho).is_none(), "a categoria saiu");
+        assert_eq!(store.categories().len(), 1, "e só ela saiu");
+        assert_eq!(store.categories()[0].id, casa);
+        // Asserção sobre a `Db` **toda**: nenhuma referência ao id eliminado
+        // sobra em `todos` nem em `trash`.
+        assert_eq!(
+            referencias_a(store.db(), &trabalho),
+            0,
+            "sobrou uma referência à categoria eliminada: {:?}",
+            store.db()
+        );
+        assert_eq!(
+            titulos(&store),
+            ["a", "b", "c", "e", "f"],
+            "nenhuma tarefa se perdeu"
+        );
+        assert_eq!(
+            store.find(&outra).unwrap().category_id.as_ref(),
+            Some(&casa),
+            "a outra categoria não foi tocada"
+        );
+        assert!(store.find(&sem).unwrap().category_id.is_none());
+        assert_eq!(store.trash_len(), 1, "o lixo não foi esvaziado");
+        assert_eq!(store.db().trash[0].todo.title, "d");
+        assert!(
+            store.db().trash[0].todo.category_id.is_none(),
+            "a entrada do lixo perdeu a atribuição (senão o `u` repunha uma \
+             referência pendente)"
+        );
+
+        // Uma categoria inexistente é erro, e a `Db` fica como estava.
+        let antes = store.db().clone();
+        let erro = store.delete_category(&trabalho).expect_err("já não existe");
+        assert!(matches!(erro, OpsError::CategoryNotFound(_)));
+        assert_eq!(*store.db(), antes);
+
+        drop(store);
+        let recarregado = Store::open(&path).unwrap();
+        assert_eq!(
+            referencias_a(recarregado.db(), &trabalho),
+            0,
+            "e a limpeza ficou gravada"
+        );
+        assert!(recarregado.category(&trabalho).is_none());
+        assert_eq!(recarregado.todos().len(), 5);
+        assert_eq!(recarregado.trash_len(), 1);
+    }
+
+    #[test]
+    fn assign_category_valida_antes_de_tocar_na_db() {
+        let (path, mut store) = store("categoria-assign");
+        let trabalho = store.add_category("Trabalho").unwrap();
+        let tarefa = store.add("comprar café").unwrap();
+        let outra = store.add("pagar contas").unwrap();
+
+        store.assign_category(&tarefa, Some(&trabalho)).unwrap();
+        assert_eq!(
+            store.find(&tarefa).unwrap().category_id.as_ref(),
+            Some(&trabalho)
+        );
+        assert!(store.find(&outra).unwrap().category_id.is_none());
+
+        // `None` tira a atribuição.
+        store.assign_category(&tarefa, None).unwrap();
+        assert!(store.find(&tarefa).unwrap().category_id.is_none());
+
+        // Volta a atribuir, para a prova de persistência no fim.
+        store.assign_category(&tarefa, Some(&trabalho)).unwrap();
+
+        // Categoria inexistente: erro **e** `Db` igual antes/depois (nada de
+        // meia atribuição).
+        let antes = store.db().clone();
+        let erro = store
+            .assign_category(&tarefa, Some(&CategoryId::new()))
+            .expect_err("categoria inexistente");
+        assert!(matches!(erro, OpsError::CategoryNotFound(_)));
+        assert_eq!(*store.db(), antes, "o erro não deixou meia atribuição");
+        assert_eq!(
+            store.find(&tarefa).unwrap().category_id.as_ref(),
+            Some(&trabalho),
+            "e não desatribuiu o que estava atribuído"
+        );
+
+        // Tarefa inexistente: mesmo contrato.
+        let erro = store
+            .assign_category(&TodoId::new(), Some(&trabalho))
+            .expect_err("tarefa inexistente");
+        assert!(matches!(erro, OpsError::NotFound(_)));
+        assert_eq!(*store.db(), antes);
+
+        let recarregado = Store::open(&path).unwrap();
+        assert_eq!(
+            recarregado.find(&tarefa).unwrap().category_id.as_ref(),
+            Some(&trabalho),
+            "a atribuição ficou gravada"
+        );
     }
 }
