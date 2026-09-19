@@ -247,7 +247,7 @@ id,title,description,done,priority,created_at,completed_at,due_at
   que diz o que faltava: sem essa comparação a primeira linha seria comida como cabeçalho e
   a primeira tarefa desaparecia em silêncio (era um defeito do `rtodo` antigo).
 - qualquer outra extensão → JSON: o envelope novo (`{schema, todos, trash}`, que é o próprio
-  `db.json` — traz também o lixo) ou um array, que é lido como o formato do `rtodo`
+  `db.json` — traz também o lixo) ou um array, lido registo a registo pelo formato de cada um
   (ver abaixo).
 
 O import **nunca duplica**: registos cujo `id` já exista (na base ou no ficheiro) são
@@ -290,9 +290,15 @@ Dois avisos:
   rtodo; converte-o com o import em vez de o abrires como base de dados»). É para importar,
   não para abrir — e recusa precisamente para não lhe escrever por cima. O ficheiro antigo
   fica como está.
-- Um array JSON é lido **sempre** como registos do `rtodo`, porque é a forma que ele
-  escrevia. Para levar a base de uma máquina para outra usa o envelope (`db.json`, que é
-  JSON normal e legível por `jq`), não um array de tarefas no formato novo.
+- Um array JSON é lido **registo a registo**, pelo formato de cada um: um registo com
+  algum dos campos que só o formato novo tem (`id`, `priority`, `created_at`,
+  `completed_at`, `due_at`) é lido como tarefa, com a mesma validade do envelope — sem
+  `id`, ou com uma `description` nula, dá erro com o número da linha, e o `id` que lá
+  estiver é preservado (importar duas vezes o mesmo array não duplica nada); sem nenhum
+  desses campos é lido como registo do `rtodo`, como na tabela acima. Os dois formatos
+  podem conviver no mesmo ficheiro. Para levar a base de uma máquina para outra serve o
+  envelope (`db.json`) ou um array de tarefas no formato novo, por exemplo
+  `jq '.todos' db.json > arr.json` — que também é JSON normal e legível por `jq`.
 
 O CSV do `rtodo` antigo fica de fora: esta versão importa o CSV que ela própria exporta.
 

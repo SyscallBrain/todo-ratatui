@@ -1,4 +1,5 @@
-//! Import e export: CSV e JSON (envelope novo ou array legado do `rtodo`).
+//! Import e export: CSV e JSON (envelope novo, array de [`Todo`] ou array
+//! legado do `rtodo`).
 //!
 //! Três requisitos fechados na revisão pré-T0, todos com teste próprio:
 //!
@@ -216,6 +217,7 @@ pub struct ImportReport {
     /// Entradas de lixo importadas.
     pub lixo: usize,
     /// Tarefas do legado que vieram sem data legível (`created_at` = agora).
+    /// No formato novo é sempre 0: o `created_at` é obrigatório lá.
     pub sem_data: usize,
 }
 
@@ -376,8 +378,13 @@ pub fn import_csv_from_path(store: &mut Store, path: &Path) -> Result<ImportRepo
     merge(store, candidatos, Vec::new(), lidos, sem_data)
 }
 
-/// Importa JSON: o envelope novo (`{schema, todos, trash}`) ou o array legado
-/// do `rtodo` (`[{title, description, done, time, date}]`).
+/// Importa JSON: o envelope novo (`{schema, todos, trash}`) ou um array.
+///
+/// No array o formato é decidido **por registo**: um registo com qualquer dos
+/// campos que só o formato novo tem é lido como [`Todo`] (com a mesma validade
+/// do envelope e o `id` preservado); sem nenhum deles é lido como registo legado
+/// do `rtodo` (`{title, description, done, time, date}`). Os dois podem conviver
+/// no mesmo ficheiro.
 pub fn import_json_from_path(store: &mut Store, path: &Path) -> Result<ImportReport, ImportError> {
     let bytes = fs::read(path).map_err(|source| ImportError::Io {
         path: path.to_path_buf(),
@@ -395,6 +402,12 @@ pub fn import_json_from_path(store: &mut Store, path: &Path) -> Result<ImportRep
             let mut sem_data = 0;
             for (indice, registo) in registos.into_iter().enumerate() {
                 let linha = indice as u64 + 1;
+                if registo_do_formato_novo(&registo) {
+                    // O formato novo traz `created_at` validado pelo próprio
+                    // `Todo`: aqui não há «data que não se leu».
+                    candidatos.push(todo_do_formato_novo(&registo, path, linha)?);
+                    continue;
+                }
                 let legado: LegacyTodo =
                     serde_json::from_value(registo).map_err(|source| ImportError::Row {
                         path: path.to_path_buf(),
@@ -501,6 +514,86 @@ fn merge(
 
     store.save_db(db).map_err(ImportError::Persist)?;
     Ok(relatorio)
+}
+
+// ------------------------------------------------- registo do formato novo
+
+/// Campos que **só** o formato novo tem: é por eles que se reconhece um
+/// registo de [`Todo`] dentro de um array.
+///
+/// `title`, `description` e `done` são comuns aos dois formatos e por isso não
+/// discriminam — `done` no conjunto, em particular, mandaria **todo** o registo
+/// legado para o ramo novo, porque o `rtodo` também o gravava
+/// (`state/rtodo_ro/src/todos.rs:26-32` no ADR).
+const CAMPOS_DO_FORMATO_NOVO: [&str; 5] =
+    ["id", "priority", "created_at", "completed_at", "due_at"];
+
+/// Um registo é do formato novo quando traz **qualquer** campo que só ele tem.
+fn registo_do_formato_novo(registo: &serde_json::Value) -> bool {
+    registo
+        .as_object()
+        .is_some_and(|mapa| CAMPOS_DO_FORMATO_NOVO.iter().any(|c| mapa.contains_key(*c)))
+}
+
+/// Lê um registo do formato novo com a **mesma** validade do envelope: é
+/// `serde_json::from_value::<Todo>`, o mesmo caminho que o `Db` usa.
+///
+/// Sem tolerâncias extra: um array nu mais permissivo do que o envelope seriam
+/// duas regras de validade para o mesmo tipo. O `id` que lá estiver é
+/// preservado — é o que faz o dedupe do [`merge`] voltar a casar num array.
+fn todo_do_formato_novo(
+    registo: &serde_json::Value,
+    path: &Path,
+    linha: u64,
+) -> Result<Todo, ImportError> {
+    serde_json::from_value::<Todo>(registo.clone()).map_err(|source| ImportError::Row {
+        path: path.to_path_buf(),
+        linha,
+        campo: campo_do_erro(registo, &source),
+        detalhe: source.to_string(),
+    })
+}
+
+/// A que campo pertence o erro do `serde_json`.
+///
+/// O `serde_json` só nomeia o campo nos erros de campo ausente («missing field
+/// `id`»); nos de valor errado diz apenas «invalid type: null, expected a
+/// string». Por isso, quando a mensagem não nomeia o campo, o valor é
+/// revalidado campo a campo, na ordem de [`Todo`] — o primeiro que não passa é
+/// o culpado, e o `serde` segue essa mesma ordem ao ler a struct.
+fn campo_do_erro(registo: &serde_json::Value, erro: &serde_json::Error) -> &'static str {
+    let Some(mapa) = registo.as_object() else {
+        return "registo novo";
+    };
+    let mensagem = erro.to_string();
+    for campo in CSV_COLUMNS {
+        if mensagem.contains(&format!("missing field `{campo}`")) {
+            return campo;
+        }
+    }
+    for campo in CSV_COLUMNS {
+        if mapa
+            .get(campo)
+            .is_some_and(|valor| !campo_valido(campo, valor))
+        {
+            return campo;
+        }
+    }
+    "registo novo"
+}
+
+/// O valor passa a validação do campo, com o tipo que [`Todo`] declara.
+fn campo_valido(campo: &str, valor: &serde_json::Value) -> bool {
+    match campo {
+        "id" => serde_json::from_value::<TodoId>(valor.clone()).is_ok(),
+        "title" | "description" => valor.is_string(),
+        "done" => valor.is_boolean(),
+        "priority" => serde_json::from_value::<Priority>(valor.clone()).is_ok(),
+        "created_at" => serde_json::from_value::<DateTime<Local>>(valor.clone()).is_ok(),
+        "completed_at" => serde_json::from_value::<Option<DateTime<Local>>>(valor.clone()).is_ok(),
+        "due_at" => serde_json::from_value::<Option<NaiveDate>>(valor.clone()).is_ok(),
+        _ => true,
+    }
 }
 
 // ---------------------------------------------------------------- linha CSV
@@ -672,6 +765,7 @@ mod tests {
     use super::*;
     use crate::core::Store;
     use crate::core::ops::TRASH_LIMIT;
+    use serde_json::json;
     use std::str::FromStr;
     use uuid::Uuid;
 
@@ -1050,5 +1144,215 @@ mod tests {
         assert_eq!(TodoId::from_str(id.as_str()).unwrap(), importado.id);
         // E o lixo continua vazio depois de um import sem lixo.
         assert!(destino.trash_entries().is_empty());
+    }
+
+    // ------------------------------------------------ array do formato novo
+
+    /// O que `jq '.todos' db.json` devolve, escrito num ficheiro.
+    fn array_do_formato_novo(store: &Store) -> String {
+        serde_json::to_string_pretty(store.todos()).expect("serializar as tarefas")
+    }
+
+    #[test]
+    fn import_json_array_do_formato_novo_preserva_id_prioridade_e_data() {
+        let (_, mut origem) = nova_loja("array-origem");
+        let id = origem.add("uma do formato novo").unwrap();
+        origem.set_priority(&id, Priority::High).unwrap();
+        let original = origem.find(&id).unwrap().clone();
+
+        let dir = dir("array");
+        let path = escrever(&dir, "arr.json", &array_do_formato_novo(&origem));
+
+        let (_, mut destino) = nova_loja("array-db");
+        let relatorio = import_json_from_path(&mut destino, &path).unwrap();
+
+        assert_eq!(relatorio.lidos, 1);
+        assert_eq!(relatorio.inseridos, 1);
+        assert_eq!(relatorio.duplicados, 0);
+        assert_eq!(
+            relatorio.sem_data, 0,
+            "o formato novo traz a data validada: não há «sem data legível» aqui"
+        );
+
+        let importado = destino.find(&id).expect("voltou com o mesmo id");
+        assert_eq!(importado, &original, "round-trip campo a campo");
+        assert_eq!(importado.priority, Priority::High);
+        assert_eq!(importado.created_at, original.created_at);
+    }
+
+    #[test]
+    fn import_json_array_do_formato_novo_duas_vezes_nao_duplica() {
+        let (_, mut origem) = nova_loja("array-dedupe-origem");
+        origem.add("primeira").unwrap();
+        origem.add("segunda").unwrap();
+        let dir = dir("array-dedupe");
+        let path = escrever(&dir, "arr.json", &array_do_formato_novo(&origem));
+
+        let (_, mut destino) = nova_loja("array-dedupe-db");
+        let primeiro = import_json_from_path(&mut destino, &path).unwrap();
+        assert_eq!(primeiro.lidos, 2);
+        assert_eq!(primeiro.inseridos, 2);
+        assert_eq!(primeiro.duplicados, 0);
+
+        let segundo = import_json_from_path(&mut destino, &path).unwrap();
+        assert_eq!(segundo.lidos, 2);
+        assert_eq!(segundo.inseridos, 0);
+        assert_eq!(segundo.duplicados, 2, "os ids preservados voltam a casar");
+        assert!(segundo.sem_alteracoes());
+        assert_eq!(destino.todos().len(), 2, "sem extend cego");
+    }
+
+    #[test]
+    fn import_json_array_do_formato_novo_sem_id_da_erro_a_nomear_o_campo() {
+        let dir = dir("array-sem-id");
+        let path = escrever(
+            &dir,
+            "sem-id.json",
+            r#"[{"title":"sem id","description":"","done":false,"priority":"high","created_at":"2026-09-18T10:00:00+01:00"}]"#,
+        );
+
+        let (_, mut store) = nova_loja("array-sem-id-db");
+        let erro = import_json_from_path(&mut store, &path).expect_err("tinha de falhar");
+
+        match &erro {
+            ImportError::Row {
+                linha,
+                campo,
+                path: ficheiro,
+                ..
+            } => {
+                assert_eq!(*linha, 1);
+                assert_eq!(*campo, "id", "o erro nomeia o campo que falta");
+                assert_eq!(ficheiro, &path, "o erro traz o ficheiro certo");
+            }
+            outro => panic!("erro inesperado: {outro:?}"),
+        }
+        assert!(erro.to_string().contains("sem-id.json"), "mensagem: {erro}");
+        assert_eq!(store.todos().len(), 0, "nunca aceitação muda");
+    }
+
+    #[test]
+    fn import_json_array_sem_created_at_da_erro_a_nomear_o_campo() {
+        let dir = dir("array-sem-data");
+        let path = escrever(
+            &dir,
+            "sem-data.json",
+            r#"[{"id":"a1","title":"sem data","description":"","done":false,"priority":"high"}]"#,
+        );
+
+        let (_, mut store) = nova_loja("array-sem-data-db");
+        let erro = import_json_from_path(&mut store, &path).expect_err("tinha de falhar");
+
+        match &erro {
+            ImportError::Row { linha, campo, .. } => {
+                assert_eq!(*linha, 1);
+                assert_eq!(*campo, "created_at");
+            }
+            outro => panic!("erro inesperado: {outro:?}"),
+        }
+        assert_eq!(store.todos().len(), 0);
+    }
+
+    #[test]
+    fn import_json_array_com_description_nula_da_erro_a_nomear_o_campo() {
+        let dir = dir("array-descricao-nula");
+        let path = escrever(
+            &dir,
+            "nula.json",
+            r#"[{"id":"a1","title":"descrição nula","description":null,"done":false,"priority":"high","created_at":"2026-09-18T10:00:00+01:00"}]"#,
+        );
+
+        let (_, mut store) = nova_loja("array-descricao-nula-db");
+        let erro = import_json_from_path(&mut store, &path).expect_err("tinha de falhar");
+
+        match &erro {
+            ImportError::Row { linha, campo, .. } => {
+                assert_eq!(*linha, 1);
+                assert_eq!(*campo, "description");
+            }
+            outro => panic!("erro inesperado: {outro:?}"),
+        }
+        assert_eq!(store.todos().len(), 0);
+    }
+
+    #[test]
+    fn a_validade_do_array_novo_e_a_do_envelope() {
+        // O que o envelope recusa (é o próprio `Todo` a recusar), o array nu
+        // também recusa: não há duas regras de validade para o mesmo tipo.
+        let maus = [
+            json!({"id":"a1","title":"t","description":null,"done":false,"priority":"high","created_at":"2026-09-18T10:00:00+01:00"}),
+            json!({"id":"a1","title":"t","description":"","done":false,"priority":"high"}),
+            json!({"id":"a1","title":"t","description":"","done":false,"priority":"urgente","created_at":"2026-09-18T10:00:00+01:00"}),
+            json!({"id":"a1","title":"t","description":"","done":"sim","priority":"high","created_at":"2026-09-18T10:00:00+01:00"}),
+            json!({"title":"t","description":"","done":false,"priority":"high","created_at":"2026-09-18T10:00:00+01:00"}),
+        ];
+
+        let dir = dir("array-validade");
+        let (_, mut store) = nova_loja("array-validade-db");
+        for (n, mau) in maus.iter().enumerate() {
+            assert!(
+                serde_json::from_value::<Todo>(mau.clone()).is_err(),
+                "o envelope recusava isto: {mau}"
+            );
+            let path = escrever(&dir, &format!("mau-{n}.json"), &format!("[{mau}]"));
+            let erro = import_json_from_path(&mut store, &path)
+                .expect_err("o array tem de recusar o que o envelope recusa");
+            assert!(matches!(erro, ImportError::Row { .. }), "erro foi {erro:?}");
+        }
+
+        // E o caminho real do envelope, com o primeiro caso mau lá dentro.
+        let envelope = format!(
+            r#"{{"schema":{SCHEMA_VERSION},"todos":[{}],"trash":[]}}"#,
+            maus[0]
+        );
+        let path = escrever(&dir, "envelope-mau.json", &envelope);
+        let erro = import_json_from_path(&mut store, &path).expect_err("envelope mau");
+        assert!(
+            matches!(erro, ImportError::Json { .. }),
+            "erro foi {erro:?}"
+        );
+
+        assert_eq!(
+            store.todos().len(),
+            0,
+            "nada entrou por nenhum dos caminhos"
+        );
+    }
+
+    #[test]
+    fn um_array_com_os_dois_formatos_e_lido_registo_a_registo() {
+        let dir = dir("array-misto");
+        let path = escrever(
+            &dir,
+            "misto.json",
+            r#"[
+                {"title":"antiga","description":"do rtodo","done":false,"time":"High","date":""},
+                {"id":"nova-1","title":"nova","description":"","done":false,"priority":"low","created_at":"2026-09-18T10:00:00+01:00"}
+            ]"#,
+        );
+
+        let (_, mut store) = nova_loja("array-misto-db");
+        let relatorio = import_json_from_path(&mut store, &path).unwrap();
+
+        assert_eq!(relatorio.lidos, 2);
+        assert_eq!(relatorio.inseridos, 2);
+        assert_eq!(
+            relatorio.sem_data, 1,
+            "só o registo legado conta em «sem data legível»"
+        );
+
+        let nova = store
+            .find(&TodoId::from("nova-1".to_owned()))
+            .expect("o id do formato novo é preservado");
+        assert_eq!(nova.title, "nova");
+        assert_eq!(nova.priority, Priority::Low);
+
+        let antiga = store
+            .todos()
+            .iter()
+            .find(|t| t.title == "antiga")
+            .expect("o registo legado continua a ser lido como legado");
+        assert_eq!(antiga.priority, Priority::High, "o `time` do rtodo mapeia");
+        assert_ne!(antiga.id.as_str(), "nova-1", "o legado ganha id novo");
     }
 }
