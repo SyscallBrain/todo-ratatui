@@ -3,6 +3,89 @@
 O formato segue de perto o [Keep a Changelog](https://keepachangelog.com/pt-PT/1.1.0/);
 as versões são as do `Cargo.toml` e as etiquetas do repositório (`vX.Y.Z`).
 
+## 1.2.0 — 2026-09-19
+
+Categorias: uma por tarefa, com criar, renomear e eliminar dentro da aplicação, atribuição pela
+caixa do `C`, filtro próprio e ordem na lista. **O formato dos dados muda** — o `db.json` passa
+a `schema: 3` — e é o único sítio onde esta versão paga: um ficheiro `3` **não abre** na v1.1.0,
+que recusa o arranque e diz qual o `schema` que encontrou, **sem lhe tocar**. Nada se perde (o
+`.bak` é a geração anterior) e, no sentido contrário, um `db.json` da v1.1.0 **abre nesta versão
+sem conversão nem aviso** — é reescrito como `3` na gravação seguinte, sem mudar um campo das
+tarefas.
+
+### Adicionado
+
+- **Categorias** — `Category { id, name }` (o `id` é a chave, o nome é editável) com o nome
+  **único** e comparado sem maiúsculas, e uma categoria **por tarefa**
+  (`Todo.category_id: Option<CategoryId>`). O `core` ganha o CRUD completo, sem UI:
+  `add_category`, `rename_category`, `delete_category` (limpa a atribuição das tarefas **na
+  lista e no lixo**, e devolve a contagem) e `assign_category`.
+- **Caixa de categorias (`C`)** — sobreposta à lista, no molde da caixa de temas, com mapa de
+  teclas próprio: a primeira linha é sempre `sem categoria` (o `None`, não uma categoria),
+  cada entrada diz quantas tarefas **da lista** tem e a linha de estado diz o que a tarefa
+  selecionada tem agora. `Enter` atribui — e **tira** a atribuição, em `sem categoria` —, `a`
+  cria, `e` renomeia, `d` elimina e `Esc` (ou `q`) fecha sem atribuir. Abre **mesmo sem
+  tarefas**, que é a única forma de criar categorias numa base vazia. A caixa tem uma janela
+  de dez entradas (`1–10 de 13`) e não cresce.
+- **`F`, o filtro por categoria** — um eixo próprio, ao lado do `f`, que continua a governar só
+  o estado: `todas → sem categoria → as categorias → todas`. A linha 2 escreve
+  `· categoria: <nome>` **apenas quando o filtro restringe**, e o `Esc` em repouso — que já
+  limpava a busca e o filtro — limpa-o também. Eliminar a categoria que está a filtrar repõe o
+  filtro em `todas`, em vez de deixar uma lista vazia sem explicação.
+- **Ordem por categoria** no ciclo do `s` (`SortKey::Category`), com as tarefas sem categoria
+  no fim e a ordem de inserção dentro de cada grupo.
+- **A categoria lê-se sem abrir a caixa**: uma coluna própria de 14 colunas na linha da tarefa
+  (o nome cortado com `…`, `—` quando a tarefa não tem nenhuma, e nada na vista do lixo) e uma
+  linha `Categoria` no painel de detalhe, com o nome inteiro. O título da linha cede as 15
+  colunas (59 → 44 a 80×24; 84 a 120×32).
+- **A guarda de duas pressões passa a ter alvo** (`Guarda::{EsvaziarLixo, EliminarCategoria}`):
+  o `c` da vista do lixo e o `d` da caixa de categorias deixam de partilhar um sinalizador, que
+  é como se esvaziaria o lixo a eliminar uma categoria.
+
+### Alterado
+
+- **O formato em disco passa a `schema: 3`**: entram `categories` (a lista, por ordem de
+  inserção), `category_id` por tarefa e `dangling_recovered` — as referências a categorias que
+  não resolvem (ficheiro editado à mão, ficheiros fundidos) são normalizadas para `null` na
+  leitura e **contadas no ficheiro**, para o número não depender de a aplicação ainda estar de
+  pé quando ele foi lido. A leitura aceita `2` e `3`; a gravação emite sempre `3`. **Um
+  ficheiro `3` não abre na v1.1.0**: essa versão recusa o arranque com
+  `schema 3 … não é suportado (esperado 2)` e não lhe toca — a saída é o `.bak`, que fica com a
+  geração anterior.
+- **O CSV passa a 9 colunas**, com `category` no fim a levar o **nome** da categoria (uma
+  tarefa sem categoria sai com o campo vazio). O import **continua a aceitar o cabeçalho de 8
+  colunas da v1.1.0** (tudo entra sem categoria) e recusa o resto, agora com uma mensagem que
+  mostra os dois cabeçalhos aceites e o encontrado. A categoria é identificada pelo nome: um
+  nome desconhecido é **criado**, um existente — mesmo com outras maiúsculas — é
+  **reaproveitado**, e uma categoria nova só nasce para as tarefas que entram de facto (um CSV
+  reimportado não inventa categorias). O relatório do import ganha as contagens de categorias
+  criadas e reaproveitadas e de tarefas que ficaram sem categoria.
+- **A ajuda `?`** ganha `F  filtrar categoria` e `C` (na linha do `T`) **sem crescer**: para
+  abrir espaço, `j / ↓` e `k / ↑` fundem-se numa linha e `f  filtrar` passa a `f  filtrar
+  estado`. O `s` inclui a categoria no ciclo e o `Esc` limpa os três eixos.
+- **Os *golden files***: 11 novos (a caixa de categorias e os seus estados, o filtro, a ordem
+  por categoria), 10 alterados (a coluna da categoria em todas as linhas da lista e a ajuda do
+  `?`) e 5 iguais — os do lixo, que não mostra categorias.
+- **`README.md`** documenta a caixa, o filtro, o CSV de 9 colunas e o formato `3`, e o âmbito
+  passa a ser o da v1.2: a linha que punha «tags» fora sai (a resposta a esse pedido é **uma**
+  categoria por tarefa; etiquetas múltiplas continuam fora) e a lista do que fica fora fica
+  escrita.
+
+### Notas
+
+- Alcance medido da mudança de formato: um `db.json` da v1.1.0 abre sem conversão nem aviso, e
+  a primeira gravação reescreve-o como `3` com as tarefas intactas. A volta atrás não é
+  automática: o binário antigo recusa o ficheiro novo **sem lhe tocar**, e o caminho é o `.bak`
+  (ou o `db.json.pre-restore` de um restauro).
+- No CSV, a categoria viaja pelo **nome**: um ficheiro exportado **antes** de um rename traz o
+  nome antigo, e é esse que as tarefas que entrarem levam — a categoria antiga é recriada ao
+  lado da renomeada. Está registado no `README`.
+- O `q` com a caixa de categorias aberta **fecha a caixa, não sai do programa** (a mesma
+  decisão da caixa de temas), e o `Esc` em repouso continua a não sair.
+- Divergências conhecidas, pré-existentes e não corrigidas aqui: as da 1.0.1 (o aviso de
+  transbordo do lixo não é desenhado a vermelho e a guarda do `c` dura 5 s com uma mensagem de
+  3 s).
+
 ## 1.1.0 — 2026-09-19
 
 Temas: o ecrã passa a ser desenhado a partir de uma paleta com nome, escolhida dentro da

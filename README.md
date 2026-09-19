@@ -1,8 +1,8 @@
 # todo-ratatui
 
 Lista de tarefas (TODO) em TUI, escrita em Rust com [ratatui](https://ratatui.rs):
-prioridades, descrições, busca, filtro e ordenação, lixo com reposição (o «desfazer» que
-sobrevive a um `kill -9`) e import/export CSV e JSON.
+categorias, prioridades, descrições, busca, filtro e ordenação, lixo com reposição (o
+«desfazer» que sobrevive a um `kill -9`) e import/export CSV e JSON.
 
 É uma **reescrita de raiz do `rtodo`** — a CLI antiga de menus numerados
 (`github.com/TiagoRCorreia/rtodo`), hoje arquivada. Não há código partilhado entre os dois
@@ -112,8 +112,9 @@ cargo build --release
 | `d` | mandar a selecionada para o lixo |
 | `u` | repor o último lote que ainda está no lixo |
 | `1` `2` `3` | prioridade Alta · Média · Baixa |
-| `s` | próxima ordem: prioridade → estado → prazo → mais antigas → mais recentes → prioridade |
+| `s` | próxima ordem: prioridade → estado → prazo → categoria → mais antigas → mais recentes → prioridade |
 | `f` | próximo filtro: todas → pendentes → concluídas |
+| `F` | próximo filtro de categoria: todas → sem categoria → uma categoria → todas |
 | `/` | buscar (título e descrição; `Enter` confirma, `Esc` desiste) |
 | `t` | concluir todas — ou reabrir todas, se já estiverem concluídas |
 | `c` | limpar concluídas (vão para o lixo, num só lote) |
@@ -121,8 +122,19 @@ cargo build --release
 | `x` | exportar para um ficheiro |
 | `L` | entrar ou sair da vista do lixo |
 | `T` | escolher o tema do ecrã (ver [Temas](#temas)) |
+| `C` | caixa de categorias: atribuir, criar, renomear e eliminar (ver [Caixa de categorias](#caixa-de-categorias-c)) |
 | `?` | ajuda |
-| `Esc` | tirar a mensagem; sem mensagem, limpar busca e filtro |
+| `Esc` | tirar a mensagem; sem mensagem, limpar busca, filtro e categoria |
+
+Uma nota sobre os dois eixos que a linha 2 mostra: `f` governa o **estado** (todas, pendentes,
+concluídas) e `F` governa a **categoria** — são eixos separados de propósito, senão nunca se
+via «pendentes da categoria X». `F` cicla `todas → sem categoria → as categorias, pela ordem
+de inserção → todas`, e a linha 2 só escreve `· categoria: <nome>` quando o filtro
+**restringe** (`sem categoria` escreve-se por palavras); com `todas` não escreve nada. Se a
+categoria filtrada for eliminada, o filtro volta a `todas` — uma lista vazia sem explicação
+seria pior. A categoria de cada tarefa está na coluna própria da linha (ver
+[Caixa de categorias](#caixa-de-categorias-c)) e o `Esc` em repouso limpa os três eixos
+(busca, estado e categoria) sem sair da aplicação.
 
 ### Vista do lixo (`L`)
 
@@ -135,11 +147,13 @@ cargo build --release
 | `?` | ajuda |
 | `Ctrl+C` | sair |
 
-Nesta vista `a`, `e`, `d`, `u`, `1` `2` `3`, `t`, `s`, `f`, `i`, `x` e `q` não fazem nada
-(é um mapa próprio): `u`, que na lista repõe o último lote, aqui teria dois sentidos, e um
-`c` com dois sentidos esvaziaria o lixo sem guarda.
+Nesta vista `a`, `e`, `d`, `u`, `1` `2` `3`, `t`, `s`, `f`, `i`, `x`, `C`, `F` e `q` não fazem
+nada (é um mapa próprio): `u`, que na lista repõe o último lote, aqui teria dois sentidos, um
+`c` com dois sentidos esvaziaria o lixo sem guarda, e `C`/`F` — as categorias — não entram
+nesta vista: o rodapé não as anuncia e a linha do lixo não mostra categoria nenhuma (nem um
+`—`, que afirmaria «sem categoria» sobre tarefas que podem ter uma).
 
-### Linha de texto (nova tarefa, editar, buscar, importar, exportar)
+### Linha de texto (nova tarefa, editar, buscar, importar, exportar, criar/renomear categoria)
 
 | Tecla | Acção |
 | --- | --- |
@@ -182,6 +196,52 @@ linha com o modo de cor em uso (`rgb` ou `ansi`). A barra da linha 23 passa a
 `Esc volta ao tema de entrada`, e a ajuda `?` lista `T  tema`.
 
 Ver [Temas](#temas) para o catálogo e para onde a escolha fica guardada.
+
+### Caixa de categorias (`C`)
+
+| Tecla | Acção |
+| --- | --- |
+| `j` · `↓` · `k` · `↑` | entrada seguinte · anterior (para nos extremos, não roda) |
+| `g` · `G` | primeira · última entrada |
+| `Enter` | atribui a categoria do cursor à tarefa selecionada e fecha |
+| `a` | criar uma categoria (abre a linha do nome) |
+| `e` | renomear a categoria do cursor (abre a linha do nome) |
+| `d` | eliminar a categoria do cursor (**pede duas pressões**) |
+| `Esc` · `q` | fechar **sem** atribuir |
+| `Ctrl+C` | sair |
+
+É um mapa próprio, como o da ajuda e o das temas: com a caixa aberta nada da lista vale lá
+dentro — nem o `d` que manda a tarefa para o lixo. A **primeira linha é sempre
+`sem categoria`** (é a tarefa que não tem nenhuma, não uma categoria): lá, `e` e `d` não fazem
+nada e o `Enter` **tira** a atribuição e fecha. Cada entrada mostra entre parênteses quantas
+tarefas **da lista** tem (`Trabalho (4)`, `sem categoria (12)` — a lista, não o lixo), a linha
+de estado diz o que a tarefa selecionada tem agora (`Atribuída: Trabalho`) e o rodapé só
+anuncia as teclas vivas nesse contexto. Com mais categorias do que as dez que cabem, a caixa
+ganha uma janela (`1–10 de 13`) que anda com o cursor; a caixa **não cresce**.
+
+A caixa abre **mesmo sem tarefas** — é a única forma de criar categorias numa base vazia —, e
+sem nenhuma categoria a linha de estado di-lo (`Sem categorias — a cria a primeira`); sem
+tarefas, diz que não há a quem atribuir (`Sem tarefas — não há a quem atribuir`), em vez de
+deixar parecer que o `Enter` está avariado.
+
+`a` e `e` abrem a linha de texto na linha 22, **por cima** da caixa, e `Enter` guarda. O nome é
+**único** (ignora maiúsculas: `Trabalho` e `trabalho` são o mesmo) e não pode ser vazio; um
+nome recusado diz porquê, a linha fica aberta e o texto escrito **não se perde**. Renomear muda
+o nome, não o `id` — as tarefas da categoria continuam a ser as mesmas.
+
+`d` é a segunda operação do programa **sem undo** por trás (a primeira é esvaziar o lixo): a
+primeira pressão arma uma guarda de cinco segundos e a linha de estado diz o preço —
+`Eliminar «Trabalho»? 2 tarefas ficam sem categoria` —, o rodapé passa a
+`d outra vez confirma · Esc cancela` e qualquer outra tecla desarma. A segunda pressão
+elimina: as tarefas da categoria, **na lista e no lixo**, ficam sem categoria, e a contagem é
+anunciada (`Eliminada «Trabalho» · 2 tarefas ficaram sem categoria`). Recriar a categoria é uma
+linha; a atribuição das tarefas não volta sozinha — é por isso que a guarda existe.
+
+Onde é que a categoria se lê sem abrir a caixa: uma coluna própria de **14 colunas** na linha
+da tarefa (o nome cortado com `…`, `—` quando a tarefa não tem nenhuma, e nada na vista do
+lixo) e uma linha `Categoria` no painel de detalhe, com o nome inteiro. O título da linha cede
+as colunas (44 a 80×24, 84 a 120×32). A barra da linha 23 passa a
+`Esc fecha sem atribuir` e a ajuda `?` lista `C` e `F`.
 
 ## Temas
 
@@ -340,11 +400,12 @@ A preferência de tema tem os seus próprios ficheiros, e **não** fica aqui:
 de escrita atómica do `db.json`) — é configuração, não dado (ver
 [Temas](#temas)).
 
-O **formato dos dados não mudou na v1.1**: o envelope continua `{schema, todos, trash,
-trash_dropped}` com `schema: 2` e nada foi acrescentado ao `db.json`. Um ficheiro escrito pela
-v1.0.1 abre nesta versão sem conversão nem aviso, e a v1.0.1 continua a ler o que esta versão
-escreve. O tema vive fora dos dados precisamente por isso: apagar a preferência (ou o
-`~/.config` todo) não custa uma tarefa.
+O **formato dos dados mudou na v1.2**: o envelope passa a
+`{schema, todos, trash, trash_dropped, categories, dangling_recovered}` com `schema: 3` (ver
+[Formato em disco](#formato-em-disco)). Um ficheiro escrito pela v1.1.0 abre nesta versão sem
+conversão nem aviso e é reescrito como `3` na gravação seguinte; o contrário **não** vale — a
+v1.1.0 recusa um ficheiro `3`, com a mensagem do `schema`, e não lhe toca. O tema vive fora dos
+dados precisamente por isso: apagar a preferência (ou o `~/.config` todo) não custa uma tarefa.
 
 Se uma gravação falhar (disco cheio, directório sem permissão de escrita), a linha 22 diz
 `Erro: não gravou <caminho> — lista intacta`: nada foi escrito, o que está em memória
@@ -395,23 +456,39 @@ A guarda desarma em 5 segundos ou com qualquer outra tecla.
 CSV), criando os directórios do caminho se for preciso:
 
 ```
-id,title,description,done,priority,created_at,completed_at,due_at
+id,title,description,done,priority,created_at,completed_at,due_at,category
 ```
+
+A coluna `category` (a 9.ª) leva o **nome** da categoria, e não o `id` — é o formato que se lê
+e se escreve à mão, e um `uuid` não diz nada a quem abre a folha de cálculo. Uma tarefa sem
+categoria sai com o campo vazio.
 
 **Importar (`i`)** — o que é lido depende da extensão do ficheiro:
 
-- `.csv` → CSV com o cabeçalho acima. Um CSV sem cabeçalho é **recusado**, com uma mensagem
-  que diz o que faltava: sem essa comparação a primeira linha seria comida como cabeçalho e
-  a primeira tarefa desaparecia em silêncio (era um defeito do `rtodo` antigo).
-- qualquer outra extensão → JSON: o envelope novo (`{schema, todos, trash}`, que é o próprio
-  `db.json` — traz também o lixo) ou um array, lido registo a registo pelo formato de cada um
-  (ver abaixo).
+- `.csv` → CSV com o cabeçalho de 9 colunas acima, **ou com o de 8 colunas da v1.1.0** (sem
+  `category`): um ficheiro exportado por essa versão continua a importar, e tudo entra sem
+  categoria. O cabeçalho é comparado como **conjunto de colunas** — a ordem não conta — e um CSV
+  com outro cabeçalho, ou sem cabeçalho nenhum, é **recusado**, com uma mensagem que mostra os
+  dois cabeçalhos aceites e o encontrado: sem essa comparação a primeira linha seria comida
+  como cabeçalho e a primeira tarefa desaparecia em silêncio (era um defeito do `rtodo` antigo).
+- qualquer outra extensão → JSON: o envelope novo (`{schema, todos, trash, categories}`, que é
+  o próprio `db.json` — traz também o lixo e as categorias) ou um array, lido registo a
+  registo pelo formato de cada um (ver abaixo).
+
+A categoria, no CSV, viaja **pelo nome**, e é o import que a resolve contra a base: um nome que
+não exista é **criado** (e contado no relatório), um nome que já exista — mesmo escrito com
+outras maiúsculas — é **reaproveitado** e as tarefas apontam à que cá está. A consequência a
+saber: um CSV exportado **antes** de um rename traz o **nome antigo**, e é esse que as tarefas
+que entrarem levam — a categoria antiga é recriada ao lado da nova, porque o `id` não viaja no
+CSV. E as categorias novas só nascem para as tarefas que entram **de facto**: reimportar um
+ficheiro cujas tarefas já cá estão (os `id` repetem-se) não inventa categorias nenhumas.
 
 O import **nunca duplica**: registos cujo `id` já exista (na base ou no ficheiro) são
-ignorados, e a linha 22 diz o que entrou:
+ignorados, e a linha 22 diz o que entrou (o que não aconteceu não se escreve):
 
 ```
 Importado: 2 lidos, 2 inseridos, 0 duplicados ignorados, 1 sem data legível
+Importado: 4 lidos, 4 inseridos, 0 duplicados ignorados, 3 categorias criadas
 Importação sem alterações: 3 lidos, 0 inseridos, 3 duplicados ignorados
 ```
 
@@ -469,11 +546,11 @@ O CSV do `rtodo` antigo fica de fora: esta versão importa o CSV que ela própri
 
 ### Formato em disco
 
-`db.json` real, de uma sessão com uma tarefa e outra no lixo:
+`db.json` real, de uma sessão com uma tarefa (numa categoria) e outra no lixo:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "todos": [
     {
       "id": "556c7153-c608-4c45-a1d6-858deb9003a5",
@@ -483,7 +560,8 @@ O CSV do `rtodo` antigo fica de fora: esta versão importa o CSV que ela própri
       "priority": "medium",
       "created_at": "2026-09-18T20:11:21.527979419+01:00",
       "completed_at": null,
-      "due_at": null
+      "due_at": null,
+      "category_id": "2f1c0f9c-4b4a-4e0f-9c1a-6f0a1b2c3d4e"
     }
   ],
   "trash": [
@@ -496,16 +574,47 @@ O CSV do `rtodo` antigo fica de fora: esta versão importa o CSV que ela própri
         "priority": "medium",
         "created_at": "2026-09-18T20:11:21.841912294+01:00",
         "completed_at": null,
-        "due_at": null
+        "due_at": null,
+        "category_id": "2f1c0f9c-4b4a-4e0f-9c1a-6f0a1b2c3d4e"
       },
       "index": 1,
       "deleted_at": "2026-09-18T20:11:22.151882033+01:00",
       "batch": 1
     }
   ],
-  "trash_dropped": 0
+  "trash_dropped": 0,
+  "categories": [
+    {
+      "id": "2f1c0f9c-4b4a-4e0f-9c1a-6f0a1b2c3d4e",
+      "name": "Café e compras"
+    }
+  ],
+  "dangling_recovered": 0
 }
 ```
+
+A geração é a **`schema: 3`**, a das categorias: `categories` é a lista (por ordem de
+inserção), `category_id` é a categoria de cada tarefa (`null` quando não tem nenhuma) e
+`dangling_recovered` conta as referências a categorias que não resolvem — um ficheiro editado
+à mão, dois ficheiros fundidos — que a leitura normalizou para `null`. O princípio é **uma
+tarefa nunca se perde nem fica escondida por causa de uma categoria**, e a contagem fica
+gravada no ficheiro para não depender de a aplicação ainda estar de pé quando ele foi lido.
+
+Um ficheiro **`2`** (o da v1.1.0) abre nesta versão **sem conversão nem aviso**: as chaves que
+ele não tem nascem vazias, nenhuma tarefa muda, e a gravação seguinte escreve `3` — e roda a
+geração anterior para o `.bak`, como sempre.
+
+O contrário **não vale**: um ficheiro `3` **não abre na v1.1.0**. Essa versão recusa o arranque,
+diz qual o `schema` que encontrou e **não lhe toca**:
+
+```
+erro: schema 3 em «/caminho/db.json» não é suportado (esperado 2)
+a base de dados não foi alterada; a geração anterior está em «/caminho/db.json.bak»
+```
+
+Não se estraga nada: o ficheiro `3` continua a abrir aqui, e a saída é a de sempre — o `.bak`
+(a geração anterior) e o `db.json.pre-restore` de um restauro (ver
+[Os ficheiros ao lado](#os-ficheiros-ao-lado)).
 
 ## Desenvolvimento
 
@@ -518,11 +627,11 @@ O CSV do `rtodo` antigo fica de fora: esta versão importa o CSV que ela própri
 - `src/main.rs` — terminal e arranque.
 
 ```sh
-cargo test                                  # 172 testes, incluindo os goldens
+cargo test                                  # 264 testes, incluindo os goldens
 cargo clippy --all-targets -- -D warnings
 ```
 
-Os 15 ficheiros de `tests/frames/` são *golden files*: o ecrã desenhado é comparado linha a
+Os 26 ficheiros de `tests/frames/` são *golden files*: o ecrã desenhado é comparado linha a
 linha com eles, a 80×24 e a 120×32.
 
 ## Licença
@@ -530,12 +639,20 @@ linha com eles, a 80×24 e a 120×32.
 MIT, com os dois avisos de copyright — o do `rtodo` original e o desta obra. Ver
 [LICENSE](LICENSE); o que mudou em cada versão está no [CHANGELOG.md](CHANGELOG.md).
 
-## Âmbito da v1.1
+## Âmbito da v1.2
 
+- Categorias: **uma por tarefa**, com criar, renomear e eliminar na [caixa do `C`](#caixa-de-categorias-c),
+  atribuição, filtro próprio (`F`) e ordem por categoria no `s` (ver [Teclas](#teclas)). Fora:
+  hierarquia ou sub-categorias; cor, ícone ou ordem manual por categoria; mais do que uma
+  categoria por tarefa; regras por categoria (prazo, recorrência); atribuir várias tarefas de
+  uma vez; categorias na vista do lixo; procurar por prefixo dentro da caixa; categorias
+  definidas à mão no `config.json`.
 - `due_at` (prazo) existe no formato em disco e aparece no painel de detalhe quando vem de
   um import, mas **não é editável na interface**.
 - Temas: os quatro do catálogo, com a caixa do `T` e a preferência guardada (ver
   [Temas](#temas)). Fora: temas definidos pelo utilizador (um ficheiro de paletas), tema
   claro, cor por campo e sincronizar a preferência entre máquinas.
-- Fora: descrição multi-linha, tags, várias listas, rato, notificações.
+- Fora: descrição multi-linha, várias listas, rato, notificações.
+- Sem base de dados SQLite: o `db.json` é o único formato (ver
+  [Formato em disco](#formato-em-disco)).
 - Não há publicação no crates.io (`publish = false` no `Cargo.toml`).
