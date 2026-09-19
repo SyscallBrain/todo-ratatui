@@ -24,7 +24,7 @@ use std::path::Path;
 use chrono::{Local, NaiveDate};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -33,30 +33,18 @@ use crate::core::{Priority, TRASH_LIMIT, Todo, Trashed};
 
 use super::app::{App, Status, UNDO_HINT};
 use super::event::InputMode;
+use super::theme::Theme;
 
-// ---------------------------------------------------------------- tokens (§1)
+// ------------------------------------------------------------------- cor (§1)
 
-/// Papel `fg` — texto normal. É o estilo por omissão: um `Span::raw` já o tem.
-const FG: Style = Style::new();
-/// Papel `accent` — nome da app, etiquetas de modo, nomes de secção da ajuda.
-const ACCENT: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-/// Papel `high` — prioridade alta e avisos. O `H` faz parte da linha: a cor
-/// nunca é o único sinal (§1).
-const HIGH: Style = Style::new().fg(Color::Red);
-/// Papel `done` — a caixa da concluída.
-const DONE: Style = Style::new().fg(Color::Green);
-/// Papel `rule` — réguas. `Indexed(8)` dá 3,63:1: chega para gráficos, **não**
-/// para texto (§0), por isso só aparece aqui.
-const RULE: Style = Style::new().fg(Color::Indexed(8));
-/// Papel `err` — vermelho **e** o prefixo «Erro:» no próprio texto.
-const ERR: Style = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
-/// Linha selecionada: `REVERSED` e **só** o papel `fg` (§3) — um só foreground,
-/// para a barra ficar uniforme e nenhuma cor de prioridade se perder.
-const SELEC: Style = Style::new().add_modifier(Modifier::REVERSED);
-/// Marcador de posição: itálico, não cinzento (cinzento reprovaria AA, §4).
-const PLACEHOLDER: Style = Style::new().add_modifier(Modifier::ITALIC);
-/// Título da concluída: riscado (§1) — o contraste do texto não se baixa.
-const RISCADO: Style = Style::new().add_modifier(Modifier::CROSSED_OUT);
+// Os nove papéis de cor já não vivem aqui: vivem em `super::theme`, e o
+// desenho lê-os de `app.theme`. Não há neste ficheiro uma única cor literal
+// (§1 do desenho, decisão 5 do ADR) — é isso que faz o tema escolhido valer
+// para o ecrã todo, em vez de conviver com restos da v1.0.1.
+//
+// As funções que não recebem o `App` (réguas, a linha de uma tarefa, o
+// cabeçalho do painel) recebem o `&Theme` como primeiro argumento: a mesma
+// fonte de cor, por outro caminho.
 
 // ------------------------------------------------------------------ grelha (§2)
 
@@ -141,14 +129,41 @@ const TECLAS_AJUDA_LIXO: [(&str, &str); 13] = [
 
 // -------------------------------------------------------------------- ecrã
 
+/// Pinta `area` com o fundo do tema, e com o `fg` do papel `fg` — para o texto
+/// que não declara cor nenhuma (um `Span::raw`, os preenchimentos) ficar com a
+/// cor do tema e não com a do terminal.
+///
+/// O `Cell::set_style` do `ratatui` **junta** o estilo (só troca o que o estilo
+/// traz), pelo que a pintura sobrevive a tudo o que é desenhado depois: os
+/// spans do desenho não declaram fundo, portanto não o apagam. É esta pintura
+/// que faz os rácios de contraste de §T.3 valerem em qualquer terminal e não só
+/// naquele em que o desenho foi afinado. Um tema sem `bg` — o `classico`, o
+/// único — não pinta nada: mantém o fundo do terminal, como a v1.0.1.
+fn pinta_o_fundo(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(bg) = app.theme.bg {
+        frame.buffer_mut().set_style(
+            area,
+            Style::new().bg(bg).fg(app.theme.fg.fg.unwrap_or_default()),
+        );
+    }
+}
+
 /// Desenha o ecrã completo a partir de `&App`.
 ///
 /// Função pura: não guarda nada entre chamadas. O `ListState` do `App` é
 /// consumido por cópia (é `Copy`), pelo que o deslocamento da lista é
 /// recalculado a cada desenho a partir da seleção — que é a única coisa que o
 /// `App` promete manter.
+///
+/// A cor vem **toda** de `app.theme` (é a única fonte, §1): a função pinta o
+/// fundo do tema na área e lê os nove papéis para o resto do desenho.
 pub fn ui(frame: &mut Frame, app: &App) {
     let area = frame.area();
+
+    // O fundo primeiro, e antes de tudo o resto (§4 do ADR): o que se desenha a
+    // seguir não traz fundo, portanto herda este.
+    pinta_o_fundo(frame, app, area);
+
     if area.width < LARGURA_MINIMA || area.height < ALTURA_MINIMA {
         // Terminal pequeno: mensagem única, sem desenho parcial (§2).
         frame.render_widget(
@@ -164,7 +179,7 @@ pub fn ui(frame: &mut Frame, app: &App) {
     let linha = |y: u16| Rect::new(area.x, area.y + y, area.width, 1);
 
     frame.render_widget(Paragraph::new(cabecalho(app, area.width)), linha(0));
-    frame.render_widget(Paragraph::new(regua(area.width)), linha(1));
+    frame.render_widget(Paragraph::new(regua(app.theme, area.width)), linha(1));
     frame.render_widget(Paragraph::new(linha_de_estado(app, area.width)), linha(2));
 
     let com_painel = area.width >= LARGURA_PAINEL && area.height >= ALTURA_PAINEL_MINIMA;
@@ -183,7 +198,7 @@ pub fn ui(frame: &mut Frame, app: &App) {
     if com_painel {
         let topo = ALTURA_CABECALHO + altura_lista;
         frame.render_widget(
-            Paragraph::new(regua_da_selecionada(area.width)),
+            Paragraph::new(regua_da_selecionada(app.theme, area.width)),
             linha(topo),
         );
         frame.render_widget(
@@ -193,7 +208,7 @@ pub fn ui(frame: &mut Frame, app: &App) {
     }
 
     let base = area.height - ALTURA_RODAPE;
-    frame.render_widget(Paragraph::new(regua(area.width)), linha(base));
+    frame.render_widget(Paragraph::new(regua(app.theme, area.width)), linha(base));
     frame.render_widget(
         Paragraph::new(mensagem(app, area.width, com_painel)),
         linha(base + 1),
@@ -233,7 +248,7 @@ fn cabecalho(app: &App, largura: u16) -> Line<'static> {
         }
     };
     barra(
-        Span::styled("todo-ratatui", ACCENT),
+        Span::styled("todo-ratatui", app.theme.accent),
         Span::raw(direita),
         largura,
     )
@@ -273,9 +288,9 @@ fn linha_de_estado(app: &App, largura: u16) -> Line<'static> {
         // `(cheio)` é persistente enquanto for verdade: o lixo a transbordar não
         // pode sair de vista com a mensagem (§4).
         let (texto, estilo) = if lixo >= TRASH_LIMIT {
-            (format!(" · lixo: {lixo} (cheio)"), HIGH)
+            (format!(" · lixo: {lixo} (cheio)"), app.theme.high)
         } else {
-            (format!(" · lixo: {lixo} (L)"), FG)
+            (format!(" · lixo: {lixo} (L)"), app.theme.fg)
         };
         spans.push(Span::styled(texto, estilo));
     }
@@ -295,15 +310,18 @@ fn barra(esquerda: Span<'static>, direita: Span<'static>, largura: u16) -> Line<
     Line::from(vec![esquerda, Span::raw(" ".repeat(espaco)), direita])
 }
 
-fn regua(largura: u16) -> Line<'static> {
-    Line::from(Span::styled("─".repeat(usize::from(largura)), RULE))
+fn regua(tema: &Theme, largura: u16) -> Line<'static> {
+    Line::from(Span::styled("─".repeat(usize::from(largura)), tema.rule))
 }
 
 /// Régua com etiqueta à esquerda — a do painel de detalhe (`─ selecionada ─…`).
-fn regua_da_selecionada(largura: u16) -> Line<'static> {
+fn regua_da_selecionada(tema: &Theme, largura: u16) -> Line<'static> {
     let cabeca = "─ selecionada ";
     let resto = usize::from(largura).saturating_sub(cabeca.width());
-    Line::from(Span::styled(format!("{cabeca}{}", "─".repeat(resto)), RULE))
+    Line::from(Span::styled(
+        format!("{cabeca}{}", "─".repeat(resto)),
+        tema.rule,
+    ))
 }
 
 // ---------------------------------------------------------------------- lista
@@ -315,28 +333,34 @@ fn regua_da_selecionada(largura: u16) -> Line<'static> {
 /// `largura - 21` e a data alinhada à direita — e preenchimento até `largura`,
 /// porque é isso que faz a barra da linha selecionada ser sólida até ao fim.
 #[must_use]
-pub fn row_line(todo: &Todo, selecionado: bool, largura: u16) -> Line<'static> {
+pub fn row_line(tema: &Theme, todo: &Todo, selecionado: bool, largura: u16) -> Line<'static> {
     let (coluna, estilo) = if todo.is_done() {
         // Nas concluídas a coluna é a idade de **conclusão**, com o `✓` a
         // desfazer a ambiguidade (§2).
         let quando = todo
             .completed_at
             .map_or_else(hoje, |quando| quando.date_naive());
-        (format!("✓ {}", idade(quando, hoje())), DONE)
+        (format!("✓ {}", idade(quando, hoje())), tema.done)
     } else {
-        (idade(todo.created_at.date_naive(), hoje()), FG)
+        (idade(todo.created_at.date_naive(), hoje()), tema.fg)
     };
-    linha_de_tarefa(todo, &coluna, estilo, selecionado, largura)
+    linha_de_tarefa(tema, todo, &coluna, estilo, selecionado, largura)
 }
 
 /// Linha de uma entrada do lixo: mesma grelha, e a coluna da direita é sempre a
 /// data de **remoção** — nunca o `✓` de conclusão.
-fn linha_do_lixo(entrada: &Trashed, selecionado: bool, largura: u16) -> Line<'static> {
+fn linha_do_lixo(
+    tema: &Theme,
+    entrada: &Trashed,
+    selecionado: bool,
+    largura: u16,
+) -> Line<'static> {
     let coluna = idade(entrada.deleted_at.date_naive(), hoje());
-    linha_de_tarefa(&entrada.todo, &coluna, FG, selecionado, largura)
+    linha_de_tarefa(tema, &entrada.todo, &coluna, tema.fg, selecionado, largura)
 }
 
 fn linha_de_tarefa(
+    tema: &Theme,
     todo: &Todo,
     coluna: &str,
     estilo_coluna: Style,
@@ -360,22 +384,32 @@ fn linha_de_tarefa(
                 "{prefixo}{caixa}{marca} {titulo}{}{coluna}",
                 " ".repeat(espaco)
             ),
-            SELEC,
+            tema.selec,
         ));
     }
 
     Line::from(vec![
         Span::raw(prefixo.to_owned()),
-        Span::styled(caixa.to_owned(), if todo.is_done() { DONE } else { FG }),
+        Span::styled(
+            caixa.to_owned(),
+            if todo.is_done() { tema.done } else { tema.fg },
+        ),
         Span::styled(
             format!("{marca} "),
             if todo.priority == Priority::High {
-                HIGH
+                tema.high
             } else {
-                FG
+                tema.fg
             },
         ),
-        Span::styled(titulo, if todo.is_done() { RISCADO } else { FG }),
+        Span::styled(
+            titulo,
+            if todo.is_done() {
+                tema.riscado
+            } else {
+                tema.fg
+            },
+        ),
         Span::raw(" ".repeat(espaco)),
         Span::styled(coluna.to_owned(), estilo_coluna),
     ])
@@ -389,19 +423,26 @@ fn lista(app: &App, largura: u16) -> List<'static> {
             .into_iter()
             .enumerate()
             .map(|(i, entrada)| {
-                ListItem::new(linha_do_lixo(entrada, selecionado == Some(i), largura))
+                ListItem::new(linha_do_lixo(
+                    app.theme,
+                    entrada,
+                    selecionado == Some(i),
+                    largura,
+                ))
             })
             .collect()
     } else {
         app.visible()
             .into_iter()
             .enumerate()
-            .map(|(i, todo)| ListItem::new(row_line(todo, selecionado == Some(i), largura)))
+            .map(|(i, todo)| {
+                ListItem::new(row_line(app.theme, todo, selecionado == Some(i), largura))
+            })
             .collect()
     };
     // O realce cobre a linha toda (é o `row_area` do `List`), e é por isso que
     // não há aqui um segundo preenchimento: a barra sólida vem daqui.
-    List::new(itens).highlight_style(SELEC)
+    List::new(itens).highlight_style(app.theme.selec)
 }
 
 /// Está-se na vista do lixo e o lixo está vazio (frame `80x24-13-lixo-vazio`)?
@@ -489,15 +530,15 @@ fn painel(app: &App, largura: u16) -> Vec<Line<'static>> {
 
     linhas
         .into_iter()
-        .map(|(chave, valor)| linha_do_painel(chave, &cortar(&valor, disponivel)))
+        .map(|(chave, valor)| linha_do_painel(app.theme, chave, &cortar(&valor, disponivel)))
         .collect()
 }
 
-fn linha_do_painel(chave: &str, valor: &str) -> Line<'static> {
+fn linha_do_painel(tema: &Theme, chave: &str, valor: &str) -> Line<'static> {
     let usado = 2 + chave.width();
     Line::from(vec![
         Span::raw("  "),
-        Span::styled(chave.to_owned(), ACCENT),
+        Span::styled(chave.to_owned(), tema.accent),
         Span::raw(" ".repeat(COLUNA_DETALHE.saturating_sub(usado))),
         Span::raw(valor.to_owned()),
     ])
@@ -516,18 +557,18 @@ fn mensagem(app: &App, largura: u16, com_painel: bool) -> Line<'static> {
         return entrada(app);
     }
     match &app.status {
-        Status::Error(texto) => Line::from(Span::styled(abreviar(texto, util), ERR)),
+        Status::Error(texto) => Line::from(Span::styled(abreviar(texto, util), app.theme.err)),
         // Uma mensagem que não expira desenha-se como qualquer outra: o
         // `sticky` decide o prazo, não o estilo (§4).
         Status::Message { texto, .. } | Status::Sticky(texto) => {
-            Line::from(Span::styled(abreviar(texto, util), FG))
+            Line::from(Span::styled(abreviar(texto, util), app.theme.fg))
         }
         Status::Idle if matches!(app.mode, InputMode::Trash) => pre_visualizacao_do_lixo(app, util),
         Status::Idle if com_painel => Line::default(),
         Status::Idle => match app.selected() {
             Some(todo) if !todo.description.is_empty() => Line::from(Span::styled(
                 abreviar(&format!("Descrição: {}", todo.description), util),
-                FG,
+                app.theme.fg,
             )),
             _ => Line::default(),
         },
@@ -538,12 +579,15 @@ fn mensagem(app: &App, largura: u16, com_painel: bool) -> Line<'static> {
 /// mockup: no `Buffer` essa célula não tem nada (§8, armadilha 1).
 fn entrada(app: &App) -> Line<'static> {
     let mut spans = vec![
-        Span::styled(app.mode.label().to_owned(), ACCENT),
+        Span::styled(app.mode.label().to_owned(), app.theme.accent),
         Span::raw("  "),
     ];
     let buffer = app.input();
     if buffer.is_empty() {
-        spans.push(Span::styled(app.mode.placeholder().to_owned(), PLACEHOLDER));
+        spans.push(Span::styled(
+            app.mode.placeholder().to_owned(),
+            app.theme.placeholder,
+        ));
     } else {
         spans.push(Span::raw(buffer));
     }
@@ -580,7 +624,7 @@ fn pre_visualizacao_do_lixo(app: &App, util: usize) -> Line<'static> {
                 ),
                 util,
             ),
-            FG,
+            app.theme.fg,
         )),
         _ => Line::default(),
     }
@@ -621,7 +665,7 @@ fn barra_de_ajuda(app: &App) -> Line<'static> {
     } else {
         BARRA_BUSCA
     };
-    Line::from(Span::styled(texto, FG))
+    Line::from(Span::styled(texto, app.theme.fg))
 }
 
 // ------------------------------------------------------------------ ajuda (§4)
@@ -638,6 +682,11 @@ fn desenha_ajuda(frame: &mut Frame, app: &App, area: Rect) {
         altura,
     );
     frame.render_widget(Clear, caixa);
+    // O `Clear` repõe as células a `Reset` — é isso que apaga a lista por baixo
+    // — e, com isso, tira-lhes o fundo do tema. Repinta-se a caixa para o tema
+    // continuar a valer dentro da sobreposição: sem isto, a ajuda era um
+    // rectângulo no fundo do terminal, no meio de um ecrã com fundo nosso.
+    pinta_o_fundo(frame, app, caixa);
     frame.render_widget(Paragraph::new(linhas_da_ajuda(app, largura, altura)), caixa);
 }
 
@@ -653,34 +702,49 @@ fn linhas_da_ajuda(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> {
 
     // Topo: `╭── ajuda ─…─╮` (na vista do lixo a caixa é a mesma; o que muda é a
     // lista de teclas lá dentro).
-    let mut topo = vec![('╭', RULE), ('─', RULE), ('─', RULE)];
-    topo.extend(" ajuda ".chars().map(|caracter| (caracter, ACCENT)));
+    let mut topo = vec![
+        ('╭', app.theme.rule),
+        ('─', app.theme.rule),
+        ('─', app.theme.rule),
+    ];
+    topo.extend(
+        " ajuda "
+            .chars()
+            .map(|caracter| (caracter, app.theme.accent)),
+    );
     while topo.len() < colunas.saturating_sub(1) {
-        topo.push(('─', RULE));
+        topo.push(('─', app.theme.rule));
     }
-    topo.push(('╮', RULE));
+    topo.push(('╮', app.theme.rule));
     topo.truncate(colunas);
     linhas.push(celulas_para_linha(topo));
 
     for indice in 0..usize::from(altura).saturating_sub(2) {
-        let mut celulas = vec![('│', RULE)];
-        celulas.extend(std::iter::repeat_n((' ', FG), colunas.saturating_sub(2)));
-        celulas.push(('│', RULE));
+        let mut celulas = vec![('│', app.theme.rule)];
+        celulas.extend(std::iter::repeat_n(
+            (' ', app.theme.fg),
+            colunas.saturating_sub(2),
+        ));
+        celulas.push(('│', app.theme.rule));
         celulas.truncate(colunas);
         if let Some((esquerda, direita)) = teclas.get(indice) {
             // Os nomes de secção (linha 1) são o único texto em `accent`.
-            let estilo = if indice == 1 { ACCENT } else { FG };
+            let estilo = if indice == 1 {
+                app.theme.accent
+            } else {
+                app.theme.fg
+            };
             escreve(&mut celulas, COLUNA_AJUDA_ESQ, esquerda, estilo);
             escreve(&mut celulas, COLUNA_AJUDA_DIR, direita, estilo);
         }
         linhas.push(celulas_para_linha(celulas));
     }
 
-    let mut base = vec![('╰', RULE)];
+    let mut base = vec![('╰', app.theme.rule)];
     while base.len() < colunas.saturating_sub(1) {
-        base.push(('─', RULE));
+        base.push(('─', app.theme.rule));
     }
-    base.push(('╯', RULE));
+    base.push(('╯', app.theme.rule));
     base.truncate(colunas);
     linhas.push(celulas_para_linha(base));
 
@@ -880,9 +944,14 @@ mod testes {
 
     #[test]
     fn row_line_preenche_a_largura_toda() {
+        let tema = Theme::default();
         let todo = Todo::try_new("Comprar café").expect("título");
-        assert_eq!(row_line(&todo, false, 80).width(), 80);
-        assert_eq!(row_line(&todo, true, 80).width(), 80, "a barra é sólida");
-        assert_eq!(row_line(&todo, false, 120).width(), 120);
+        assert_eq!(row_line(tema, &todo, false, 80).width(), 80);
+        assert_eq!(
+            row_line(tema, &todo, true, 80).width(),
+            80,
+            "a barra é sólida"
+        );
+        assert_eq!(row_line(tema, &todo, false, 120).width(), 120);
     }
 }

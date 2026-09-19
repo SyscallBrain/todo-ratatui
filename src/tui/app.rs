@@ -20,6 +20,7 @@ use crate::core::{
 };
 
 use super::event::{Action, InputMode, map_key};
+use super::theme::Theme;
 
 /// Janela da guarda do `c` no lixo: a segunda pressão tem de vir dentro deste
 /// tempo, e qualquer outra acção desarma (§5, mudança 7).
@@ -138,6 +139,15 @@ pub struct App {
     /// as `M` concluídas acima das `L` pendentes). A ordem **dentro** de cada
     /// grupo continua a ser a do `core::query` — ver [`App::visible`].
     pub sort: SortKey,
+    /// O tema com que o ecrã é desenhado. É a **única** fonte de cor do `tui`:
+    /// o `ui` lê os papéis daqui e o `App` não guarda cores nenhumas.
+    ///
+    /// `&'static` porque o catálogo é `const` no binário (o tema é dado, não
+    /// estado): trocar de tema é reapontar a referência (T5), nunca copiar
+    /// paletas. Por omissão é o [`Theme::default`] — Tokyo Night —, que é o que
+    /// mantém `App::new(store)` com uma assinatura só (o arranque passa a
+    /// escolha por cima, quando a tem).
+    pub theme: &'static Theme,
     buffer: Vec<char>,
     cursor: usize,
     /// Em `Editing`: o `Enter` grava a descrição em vez do título.
@@ -163,6 +173,9 @@ impl App {
             filter: Filter::default(),
             query: String::new(),
             sort: SortKey::Priority,
+            // O tema por omissão é o primeiro do catálogo (Tokyo Night): quem
+            // arranca sem escolher vê o mesmo que `Theme::default()` diz.
+            theme: Theme::default(),
             buffer: Vec::new(),
             cursor: 0,
             editing_description: false,

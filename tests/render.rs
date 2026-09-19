@@ -37,8 +37,9 @@ use unicode_width::UnicodeWidthStr;
 
 use todo_ratatui::core::{Priority, SortKey, Store, TRASH_LIMIT, Todo, TodoId, Trashed};
 use todo_ratatui::tui::app::UNDO_HINT;
+use todo_ratatui::tui::theme::SLUG_CLASSICO;
 use todo_ratatui::tui::ui::ui;
-use todo_ratatui::tui::{App, InputMode, Status};
+use todo_ratatui::tui::{App, InputMode, Status, Theme};
 
 // ------------------------------------------------------------------ os dados
 
@@ -601,7 +602,10 @@ fn frame_6_erro() {
         "a linha 22 tem 79 colunas úteis: {linha}"
     );
     let estilo = ecra.estilo(0, 22);
-    assert_eq!(estilo.fg, Some(Color::Red), "o erro é vermelho");
+    assert_eq!(
+        estilo.fg, app.theme.err.fg,
+        "o erro usa o papel `err` do tema (e o prefixo «Erro:» é o sinal que não depende da cor)"
+    );
     assert!(
         estilo.add_modifier.contains(Modifier::BOLD),
         "e o prefixo «Erro:» é o sinal que não depende da cor"
@@ -1036,16 +1040,22 @@ fn a_linha_selecionada_e_uma_barra_invertida_solida() {
         );
     }
 
-    // §1: só o `H` puxa a cor da prioridade; a concluída é `[x]` verde com o
-    // título riscado; a régua é `Indexed(8)` (e não pinta texto nenhum).
+    // §1: só o `H` puxa a cor da prioridade; a concluída é `[x]` com a cor do
+    // papel `done` e o título riscado; a régua é a do papel `rule` (e não pinta
+    // texto nenhum).
+    //
+    // As cores afirmam-se pelo **papel do tema**, não por um literal: é o
+    // `App` que traz o tema e é dele que o `ui` desenha, portanto o que aqui se
+    // prende é a ligação papel→célula. Um literal (`Color::Red`) passaria a
+    // mentir no dia em que o tema por omissão mudasse.
     assert_eq!(
         ecra.estilo(6, 3).fg,
-        Some(Color::Red),
+        app.theme.high.fg,
         "o `H` da prioridade alta"
     );
     assert_eq!(
         ecra.estilo(2, 10).fg,
-        Some(Color::Green),
+        app.theme.done.fg,
         "`[x]` da concluída"
     );
     assert!(
@@ -1054,10 +1064,10 @@ fn a_linha_selecionada_e_uma_barra_invertida_solida() {
             .contains(Modifier::CROSSED_OUT),
         "o título da concluída é riscado"
     );
-    assert_eq!(ecra.estilo(0, 1).fg, Some(Color::Indexed(8)), "a régua");
+    assert_eq!(ecra.estilo(0, 1).fg, app.theme.rule.fg, "a régua");
     assert_eq!(
         ecra.estilo(0, 0).fg,
-        Some(Color::Cyan),
+        app.theme.accent.fg,
         "o nome da app é `accent`"
     );
 }
@@ -1225,4 +1235,81 @@ fn a_filtragem_e_a_busca_nao_mentem_no_cabecalho() {
         "{}",
         ecra.linhas[2]
     );
+}
+
+// ------------------------------------------------------------------- fundo (§4)
+
+/// O fundo do tema é pintado **antes** de tudo o resto, e na área toda (§4 do
+/// ADR): é isso que faz os rácios de contraste de §T.3 valerem em qualquer
+/// terminal, e não só naquele em que o desenho foi afinado.
+///
+/// Percorre-se o `Buffer` **célula a célula**, nos dois tamanhos que o plano
+/// fixa: uma célula que escapasse à pintura (uma régua, um canto, a última
+/// coluna) não se vê numa amostra. O `classico` fica de fora desta asserção —
+/// não pinta, de propósito (ver o teste seguinte).
+#[test]
+fn o_fundo_do_tema_cobre_a_area_toda() {
+    let (_caminho, mut app) = app_da_lista("fundo");
+    let bg = app
+        .theme
+        .bg
+        .expect("o tema por omissão pinta o fundo (só o `classico` não pinta)");
+
+    let confere = |app: &App, largura: u16, altura: u16| {
+        let ecra = desenhar(app, largura, altura);
+        let buffer = ecra.terminal.backend().buffer();
+        assert_eq!(
+            (buffer.area.width, buffer.area.height),
+            (largura, altura),
+            "o backend de teste tem o tamanho pedido"
+        );
+        for y in 0..altura {
+            for x in 0..largura {
+                let celula = buffer.cell((x, y)).expect("célula dentro do ecrã");
+                assert_eq!(
+                    celula.style().bg,
+                    Some(bg),
+                    "a célula ({x}, {y}) de {largura}x{altura} ficou sem o fundo do tema"
+                );
+            }
+        }
+    };
+
+    for (largura, altura) in [(80u16, 24u16), (120, 32)] {
+        confere(&app, largura, altura);
+    }
+
+    // A ajuda é o pior caso, e por isso é o terceiro: o `Clear` da caixa repõe
+    // as células a `Reset` **antes** de o texto da caixa ser desenhado, e o
+    // fundo tem de voltar por cima disso — senão só a sobreposição ficava com o
+    // fundo do terminal, no meio de um ecrã pintado.
+    carrega(&mut app, '?');
+    assert_eq!(app.mode, InputMode::Help, "a ajuda abriu");
+    confere(&app, 120, 32);
+}
+
+/// O `classico` **não** pinta fundo: é a equivalência com a v1.0.1, em que o
+/// ecrã respeitava o fundo do terminal (§T.4). Sem esta prova, uma pintura sem
+/// guarda dava-lhe um fundo que a v1.0.1 não tinha — e o tema deixava de ser a
+/// rede de segurança dos terminais sem truecolor (§Decisão 3 do ADR).
+#[test]
+fn o_classico_nao_pinta_o_fundo_do_terminal() {
+    let (_caminho, mut app) = app_da_lista("fundo-classico");
+    app.theme = Theme::por_slug(SLUG_CLASSICO).expect("o `classico` está no catálogo");
+    assert!(app.theme.bg.is_none(), "o `classico` é o tema sem fundo");
+
+    for (largura, altura) in [(80u16, 24u16), (120, 32)] {
+        let ecra = desenhar(&app, largura, altura);
+        let buffer = ecra.terminal.backend().buffer();
+        for y in 0..altura {
+            for x in 0..largura {
+                let celula = buffer.cell((x, y)).expect("célula dentro do ecrã");
+                assert_eq!(
+                    celula.style().bg,
+                    Some(Color::Reset),
+                    "a célula ({x}, {y}) de {largura}x{altura} foi pintada sem o tema o pedir"
+                );
+            }
+        }
+    }
 }
