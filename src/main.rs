@@ -24,6 +24,8 @@ OPÇÕES:
                         grava (precede TODO_RATATUI_CONFIG)
     -h, --help          Esta ajuda
 
+Cada opção aceita «--opção valor» e «--opção=valor».
+
 O tema vem de --theme, senão TODO_RATATUI_THEME, senão o config.json, senão
 tokyo-night. Um valor desconhecido avisa e não impede abrir a lista, e nem a
 flag nem a variável gravam nada: só o Enter da caixa de temas (T) grava.

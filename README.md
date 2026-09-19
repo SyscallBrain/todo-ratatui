@@ -93,7 +93,7 @@ cargo build --release
 ```
 
 `todo_ratatui --help` mostra as opções; `--db <caminho>` muda a base de dados (ver
-[Dados](#dados)).
+[Dados](#dados)) e `--theme <slug>` escolhe o tema do ecrã (ver [Temas](#temas)).
 
 ## Teclas
 
@@ -120,6 +120,7 @@ cargo build --release
 | `i` | importar de um ficheiro |
 | `x` | exportar para um ficheiro |
 | `L` | entrar ou sair da vista do lixo |
+| `T` | escolher o tema do ecrã (ver [Temas](#temas)) |
 | `?` | ajuda |
 | `Esc` | tirar a mensagem; sem mensagem, limpar busca e filtro |
 
@@ -160,8 +161,120 @@ Três notas que evitam surpresas:
   de cancelar não pode fechar o programa.
 - Na vista do lixo o `q` também não sai: sai-se com `Esc` e depois `q`, ou com `Ctrl+C`,
   que funciona em qualquer modo.
-- As mensagens da linha 22 **não expiram sozinhas**: ficam até outra acção as substituir ou
-  até `Esc`.
+- As mensagens de acção da linha 22 **expiram aos 3 segundos**. O que não expira sozinho: o
+  undo disponível e o aviso de transbordo do lixo (ficam até outra acção os substituir ou até
+  `Esc`) e as mensagens de erro, que saem com outra acção ou com `Esc`.
+
+### Caixa de temas (`T`)
+
+| Tecla | Acção |
+| --- | --- |
+| `j` · `↓` · `k` · `↑` | tema seguinte · anterior, com pré-visualização ao vivo |
+| `Enter` | gravar a escolha e fechar |
+| `Esc` · `q` | fechar **sem** gravar (volta ao tema com que a caixa abriu) |
+| `Ctrl+C` | sair |
+
+É um mapa próprio, como o da ajuda: com a caixa aberta nada da lista vale lá dentro — nem
+`a`, nem `e`, nem `d`, nem o próprio `T`. A caixa mostra o catálogo (o `▶` marca a linha do
+cursor, `em uso` o tema gravado), a régua `─ amostra · <slug> ─` — a única linha do ecrã onde
+o *slug* aparece —, três linhas de tarefa de amostra já no tema pré-visualizado e uma última
+linha com o modo de cor em uso (`rgb` ou `ansi`). A barra da linha 23 passa a
+`Esc volta ao tema de entrada`, e a ajuda `?` lista `T  tema`.
+
+Ver [Temas](#temas) para o catálogo e para onde a escolha fica guardada.
+
+## Temas
+
+A cor do ecrã é um tema com nome. São quatro, e o *slug* é o nome que se escreve no `--theme`
+e o que fica guardado no ficheiro de preferências:
+
+| Tema | `slug` | Fundo |
+| --- | --- | --- |
+| Tokyo Night | `tokyo-night` | `#1a1b26` |
+| Tokyo Night Storm | `tokyo-night-storm` | `#24283b` |
+| Tokyo Night Moon | `tokyo-night-moon` | `#222436` |
+| Clássico (ANSI) | `classico` | — (o fundo do terminal) |
+
+`tokyo-night` é o tema por omissão. O `classico` é o que a v1.0.1 desenhava — as mesmas cores
+nomeadas do terminal, sem pintar fundo — e é também a rede de segurança dos terminais sem
+truecolor (ver [Terminais sem truecolor](#terminais-sem-truecolor)).
+
+### Como se escolhe
+
+`T` abre a [caixa de temas](#caixa-de-temas-t) sobreposta à lista: `j`/`k` (ou `↓`/`↑`)
+percorrem o catálogo com pré-visualização ao vivo — a caixa toda, molduras incluídas, muda de
+cor —, `Enter` grava a escolha e `Esc` (ou `q`) fecha sem gravar, repondo o tema com que a
+caixa abriu.
+
+### O ficheiro da preferência
+
+A escolha fica em `~/.config/todo-ratatui/config.json` (`$XDG_CONFIG_HOME/todo-ratatui/config.json`
+quando essa variável está definida), e é só isto:
+
+```json
+{
+  "theme": "tokyo-night"
+}
+```
+
+É **configuração**, não dados: vive em `~/.config` e não ao lado do `db.json` (que está em
+`~/.local/share`), porque perdê-la não pode custar uma tarefa. **Apagar o ficheiro volta ao
+tema por omissão** — não há mais nada a limpar. A escrita é atómica (`config.json.tmp` no
+mesmo directório, `fsync`, `rename`) e roda a geração anterior para `config.json.bak`, como no
+`db.json`.
+
+Um `config.json` ilegível, corrompido ou com o tipo errado (`{"theme": 3}`) **não impede abrir
+a lista**: o programa avisa no `stderr`, segue com o tema por omissão e **não toca no
+ficheiro** — substituí-lo é decisão de quem grava, com `Enter`. Um `theme` com um *slug*
+desconhecido vale o mesmo: aviso no `stderr` e a cadeia segue para o valor seguinte.
+
+### Na linha de comandos
+
+As três opções novas, cada uma com a variável de ambiente equivalente (a opção ganha à
+variável):
+
+| Opção | Variável | O que faz |
+| --- | --- | --- |
+| `--theme <slug>` | `TODO_RATATUI_THEME` | o tema desta sessão |
+| `--color <auto\|rgb\|ansi>` | `TODO_RATATUI_COLOR` | como a cor é entregue ao terminal (`auto` por omissão) |
+| `--config <caminho>` | `TODO_RATATUI_CONFIG` | outro ficheiro de preferências, em vez do `~/.config/todo-ratatui/config.json` |
+
+```sh
+todo_ratatui --theme tokyo-night-moon
+TODO_RATATUI_THEME=tokyo-night-storm todo_ratatui
+todo_ratatui --theme classico                    # o look da v1.0.1, só nesta sessão
+todo_ratatui --config /tmp/prefs.json            # experimentar sem tocar na preferência
+```
+
+As duas formas de escrever o valor valem o mesmo: `--theme tokyo-night-moon` e
+`--theme=tokyo-night-moon`.
+
+A cadeia do tema é **`--theme` → `TODO_RATATUI_THEME` → `config.json` → `tokyo-night`** e a
+da cor é **`--color` → `TODO_RATATUI_COLOR` → `auto`**. Um *slug* ou um modo de cor
+desconhecido não é fatal: fica um aviso no `stderr`, o valor seguinte da cadeia decide, e a
+lista abre na mesma.
+
+**Nem a opção nem a variável gravam nada**: são *overrides* da sessão. Quem grava é o `Enter`
+da caixa de temas — por isso um `--theme classico` de passagem não troca a preferência
+guardada.
+
+### Terminais sem truecolor
+
+O modo `auto` (por omissão) pergunta ao terminal se ele suporta truecolor. Se não suportar
+— ou se `--color ansi` for pedido —, os três temas Tokyo Night **não são rebaixados às
+cegas**: o ecrã passa a usar o `classico` e o `config.json` **fica como está**, a escolha
+guardada à espera da próxima vez que houver truecolor. Nada é reescrito por causa disto, e o
+modo pedido também não é gravado.
+
+`--color rgb` força a paleta RGB mesmo que a detecção diga o contrário: é a saída quando a
+detecção mente (um `tmux` sem `Tc`, por exemplo).
+
+### O fundo é do tema
+
+Os três temas Tokyo Night pintam o fundo do ecrã todo (`#1a1b26` no `tokyo-night`): é isso que
+faz os contrastes medidos valerem em qualquer terminal, e é a troca aceite — lá dentro não se
+vê o fundo do terminal, nem transparência. O `classico` não pinta nada e continua a respeitar
+o terminal, como a v1.0.1.
 
 ## Dados
 
@@ -195,6 +308,17 @@ escreve o caminho completo.
   há tecla para isso**; chama-se a partir de código.)
 - **`db.json.pre-restore`** — só existe depois de um restauro desses.
 - **`db.json.tmp`** — só existe durante uma gravação.
+
+A preferência de tema tem os seus próprios ficheiros, e **não** fica aqui:
+`~/.config/todo-ratatui/config.json`, com o `config.json.bak` da geração anterior (o mesmo par
+de escrita atómica do `db.json`) — é configuração, não dado (ver
+[Temas](#temas)).
+
+O **formato dos dados não mudou na v1.1**: o envelope continua `{schema, todos, trash,
+trash_dropped}` com `schema: 2` e nada foi acrescentado ao `db.json`. Um ficheiro escrito pela
+v1.0.1 abre nesta versão sem conversão nem aviso, e a v1.0.1 continua a ler o que esta versão
+escreve. O tema vive fora dos dados precisamente por isso: apagar a preferência (ou o
+`~/.config` todo) não custa uma tarefa.
 
 Se uma gravação falhar (disco cheio, directório sem permissão de escrita), a linha 22 diz
 `Erro: não gravou <caminho> — lista intacta`: nada foi escrito, o que está em memória
@@ -347,15 +471,17 @@ O CSV do `rtodo` antigo fica de fora: esta versão importa o CSV que ela própri
 - `src/core/` — modelo, persistência, operações e import/export. **Não depende de
   `ratatui`/`crossterm`**, o que o torna testável sem terminal; a invariante é travada por
   `tests/boundary.rs`.
-- `src/tui/` — estado (`app.rs`), teclas (`event.rs`) e desenho (`ui.rs`).
+- `src/tui/` — estado (`app.rs`), teclas (`event.rs`) e desenho (`ui.rs`); as cores são dados
+  com nome (`theme.rs`) e o arranque (`arranque.rs`) resolve tema, modo de cor e ficheiro de
+  preferências — o `core` (e portanto o `db.json`) só conhece o *slug*, como texto.
 - `src/main.rs` — terminal e arranque.
 
 ```sh
-cargo test                                  # 120 testes, incluindo os goldens
+cargo test                                  # 172 testes, incluindo os goldens
 cargo clippy --all-targets -- -D warnings
 ```
 
-Os 13 ficheiros de `tests/frames/` são *golden files*: o ecrã desenhado é comparado linha a
+Os 15 ficheiros de `tests/frames/` são *golden files*: o ecrã desenhado é comparado linha a
 linha com eles, a 80×24 e a 120×32.
 
 ## Licença
@@ -363,9 +489,12 @@ linha com eles, a 80×24 e a 120×32.
 MIT, com os dois avisos de copyright — o do `rtodo` original e o desta obra. Ver
 [LICENSE](LICENSE); o que mudou em cada versão está no [CHANGELOG.md](CHANGELOG.md).
 
-## Âmbito da v1
+## Âmbito da v1.1
 
 - `due_at` (prazo) existe no formato em disco e aparece no painel de detalhe quando vem de
   um import, mas **não é editável na interface**.
-- Fora: descrição multi-linha, tags, várias listas, rato, temas configuráveis, notificações.
+- Temas: os quatro do catálogo, com a caixa do `T` e a preferência guardada (ver
+  [Temas](#temas)). Fora: temas definidos pelo utilizador (um ficheiro de paletas), tema
+  claro, cor por campo e sincronizar a preferência entre máquinas.
+- Fora: descrição multi-linha, tags, várias listas, rato, notificações.
 - Não há publicação no crates.io (`publish = false` no `Cargo.toml`).
