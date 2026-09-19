@@ -54,10 +54,49 @@ parte, exactamente para que perdê-la não possa custar uma tarefa.
   `/x/foo.json.bak`. É a mesma geração anterior, num nome que não mente sobre o que lá está.
   O caminho por omissão não muda: `db.json` continua a dar `db.json.bak`.
 
+### Segurança
+
+Endurecimento a partir de uma auditoria ao código deste ramo (achados **SA-01**, **SA-02**
+e **SA-03**; os SA-04 e SA-05 ficam recusados com motivo, ver as notas). Nada disto mexe no
+formato dos dados: `schema` continua `2` e o `db.json` da v1.0.1 abre sem conversão.
+
+- **Nada do que o programa escreve no `stderr` pode conter caracteres de controlo.** Os
+  avisos de tema e de cor (que nomeiam o valor de `--theme`, `--color` e do `config.json`)
+  e os erros de arranque passam a escrever esses caracteres na forma visível `\u{1b}`.
+  Antes, um valor com uma sequência de escape OSC 52 copiava texto para a área de
+  transferência de quem lesse o aviso no terminal, e um `\n` forjava uma linha a imitar uma
+  mensagem do programa. O texto normal — acentos, `«»`, emoji — sai tal e qual, e o que é
+  *guardado* não é tocado: o saneamento é só na impressão.
+- **Os ficheiros criados nascem privados (`0600`) e os directórios que o programa cria a
+  `0700`** — `db.json`, `config.json`, o `.tmp`, o `.bak`, o `db.json.pre-restore` e até o
+  `.tmp` do export CSV. Antes ficavam à mercê do `umask` (0644 com o `umask` habitual),
+  legíveis por qualquer utilizador local. O `.bak` precisou de um passo explícito: o
+  `rename` dá-lhe o modo do ficheiro rodado, e o `0600` do temporário não chegava lá.
+- **A escrita atómica deixou de seguir um link plantado no temporário.** O `<destino>.tmp`
+  passa a ser criado com `O_EXCL` e `0600`: um symlink ou um hard link posto nesse caminho
+  (derivado do destino, logo previsível) já não redirecciona a escrita — o nome é
+  desligado, nunca atravessado. Um `.tmp` deixado por uma corrida interrompida é removido
+  e a gravação repete-se **uma** vez; sem isso, um temporário órfão bloquearia a gravação
+  para sempre.
+
 ### Notas
 
 - Para voltar ao look da v1.0.1: o tema `classico` (`T` e escolher, ou `--theme classico`) ou
   `--color ansi`. Nenhum dos dois grava a preferência.
+- **Permissões já instaladas: passo manual, opcional.** O programa fecha o que **cria** e
+  não impõe `0700` a um `~/.local/share/todo-ratatui` ou `~/.config/todo-ratatui` que já
+  exista (a partilha com o grupo pode ser uma escolha de quem lá tem os dados). Os
+  ficheiros corrigem-se sozinhos na gravação seguinte; os directórios não:
+  `chmod 700 ~/.local/share/todo-ratatui ~/.config/todo-ratatui`, se os quiseres fechados.
+- **Fórmulas no CSV (SA-04): risco assumido, por escrito.** O CSV exportado é fiel ao que
+  está guardado — um título que comece por `=`/`+`/`-`/`@` **não** é neutralizado, porque
+  o prefixo `'` degradaria o ciclo exportar→importar (`- comprar pão` voltaria
+  `'- comprar pão`). Abrir um CSV de proveniência desconhecida no Excel ou no Calc pede o
+  assistente de importação de texto. Fica registado no `README`.
+- **Caracteres de controlo dentro de um título (SA-05): sem validação nova.** Validar em
+  `Todo::try_new` daria cobertura falsa — o import desserializa a tarefa por serde e não
+  passa por lá. A defesa real é a do `ratatui`, que filtra o que desenha, e fica presa por
+  um teste de invariante (`tests/injecao.rs`) que falha se ela desaparecer.
 - Um `config.json` ilegível ou corrompido **não** impede abrir a lista: avisa no `stderr`,
   segue com o tema por omissão e **não** toca no ficheiro.
 - Alcance medido da mudança de formato: **nenhuma** base de dados é tocada — `schema`

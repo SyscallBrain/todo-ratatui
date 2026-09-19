@@ -185,7 +185,9 @@ impl Config {
         json.push(b'\n');
 
         if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(dir).map_err(|source| ConfigError::Io {
+            // `0700` só quando é o programa a criar o directório da preferência:
+            // um `~/.config/todo-ratatui` já instalado fica como está.
+            atomic::criar_directorio_privado(dir).map_err(|source| ConfigError::Io {
                 path: dir.to_path_buf(),
                 source,
             })?;

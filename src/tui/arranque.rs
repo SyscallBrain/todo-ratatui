@@ -25,6 +25,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::core::config::{self, Config};
@@ -108,15 +109,52 @@ pub struct Resolucao {
     pub avisos: Vec<String>,
 }
 
+/// A forma imprimível de `texto`: cada carácter de controlo sai como a
+/// sequência visível `\u{1b}` (a grafia do `Debug` do Rust), e tudo o resto fica
+/// tal e qual.
+///
+/// É a **fronteira de impressão** do programa (ADR §Decisão 2). O `stderr` é o
+/// único sítio que escreve no terminal fora do ratatui, e até ele chegam dados
+/// não controlados: o *slug* de `--theme`, o valor de `--color`, o *token* cru
+/// de um argumento desconhecido, e os `Display` de
+/// [`ConfigError`](crate::core::ConfigError)/[`StoreError`](crate::core::StoreError),
+/// que embutem `path.display()`. Sem isto, uma sequência OSC 52 posta num slug
+/// copiava texto para a área de transferência de quem lê o aviso, e um `\n`
+/// forjava uma linha inteira a imitar uma mensagem do programa.
+///
+/// Só caracteres de controlo (`char::is_control`, a categoria `Cc`, com `\n` e
+/// `\t` incluídos): `char::escape_default` **não** serve, porque escapa também o
+/// que não é ASCII — `café` sairia `caf\u{e9}` e o aviso passaria a mentir
+/// sobre o valor que o utilizador escreveu.
+///
+/// A sanitização é **só na impressão**: o `config.json` e o `db.json` continuam
+/// a guardar o valor original.
+#[must_use]
+pub fn imprimivel(texto: &str) -> String {
+    let mut saida = String::with_capacity(texto.len());
+    for caracter in texto.chars() {
+        if caracter.is_control() {
+            let _ = write!(saida, "\\u{{{:x}}}", u32::from(caracter));
+        } else {
+            saida.push(caracter);
+        }
+    }
+    saida
+}
+
 impl Resolucao {
     /// Escreve os avisos no `stderr`, um por linha e com o prefixo `aviso:`.
     ///
     /// O `main.rs` chama isto **antes** de [`super::run`]: o ecrã alternativo
     /// ainda não está ligado e uma mensagem escrita depois desaparecia por
     /// baixo do primeiro desenho.
+    ///
+    /// Cada aviso passa por [`imprimivel`]: é aqui, num só sítio, que se garante
+    /// que nada do que os avisos carregam (slug, valor de `--color`, caminhos)
+    /// chega ao terminal com caracteres de controlo.
     pub fn avisar(&self) {
         for aviso in &self.avisos {
-            eprintln!("aviso: {aviso}");
+            eprintln!("aviso: {}", imprimivel(aviso));
         }
     }
 }
@@ -270,5 +308,40 @@ const fn nome(modo: ModoCor) -> &'static str {
         ModoCor::Auto => "auto",
         ModoCor::Rgb => "rgb",
         ModoCor::Ansi => "ansi",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imprimivel_deixa_o_texto_normal_intacto() {
+        // Acentos, «», emoji e o ☕ continuam a ser o que o utilizador escreveu:
+        // é o que distingue isto do `char::escape_default`.
+        let texto = "café «á» ☕ — tema desconhecido";
+        assert_eq!(imprimivel(texto), texto);
+        assert_eq!(imprimivel(""), "");
+        assert_eq!(imprimivel("tokyo-night-moon"), "tokyo-night-moon");
+    }
+
+    #[test]
+    fn imprimivel_escapa_so_os_caracteres_de_controlo() {
+        // A sequência do achado SA-01 (OSC 52, que copia para a área de
+        // transferência) e um `\n`, que forjava uma linha no `stderr`.
+        assert_eq!(imprimivel("a\x1bb\nc"), "a\\u{1b}b\\u{a}c");
+        assert_eq!(
+            imprimivel("x\x1b]52;c;SGVsbG8=\x07"),
+            "x\\u{1b}]52;c;SGVsbG8=\\u{7}"
+        );
+        assert_eq!(imprimivel("\t\r\u{7f}"), "\\u{9}\\u{d}\\u{7f}");
+
+        // A propriedade, e não só os exemplos: nenhuma saída tem um carácter
+        // de controlo.
+        let saida = imprimivel("a\x1bb\nc\td\x00e");
+        assert!(
+            !saida.chars().any(char::is_control),
+            "ficou um carácter de controlo: {saida:?}"
+        );
     }
 }

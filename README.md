@@ -315,6 +315,23 @@ escreve o caminho completo.
 - **`db.json.pre-restore`** — só existe depois de um restauro desses.
 - **`db.json.tmp`** — só existe durante uma gravação.
 
+**Permissões.** Todo o ficheiro que o programa cria nasce privado (`0600`), e os
+directórios que ele cria nascem `0700`. Isso vale para o `db.json`, o `config.json`, o
+`.tmp`, o `.bak` (que, por ser o ficheiro rodado pelo `rename`, precisou de um ajuste
+explícito — herda o modo do anterior) e o `db.json.pre-restore`. Um directório que
+**já exista** não é tocado: uma instalação da v1.0.x pode ter
+`~/.local/share/todo-ratatui` e `~/.config/todo-ratatui` a `775` (do `umask`), e o
+programa não passa por cima dessa escolha — fecha-os à mão com
+`chmod 700 ~/.local/share/todo-ratatui ~/.config/todo-ratatui` se quiseres que outros
+utilizadores locais não lá entrem. Os *ficheiros* corrigem-se sozinhos: o novo
+substitui o antigo na gravação seguinte.
+
+A escrita do temporário é `O_EXCL` (o `db.json.tmp` nunca é aberto se já existir): uma
+gravação não segue um symlink nem escreve através de um hard link plantado nesse
+caminho, que é derivado do destino e por isso previsível. Um `.tmp` deixado por uma
+corrida interrompida é removido e a gravação repete-se **uma** vez, em vez de ficar
+bloqueada para sempre.
+
 A preferência de tema tem os seus próprios ficheiros, e **não** fica aqui:
 `~/.config/todo-ratatui/config.json`, com o `config.json.bak` da geração anterior (o mesmo par
 de escrita atómica do `db.json`) — é configuração, não dado (ver
@@ -335,6 +352,13 @@ ou um array legado — o programa **recusa arrancar**: escreve o erro e o caminh
 no `stderr` e sai com código diferente de zero, antes de desenhar a TUI. É de propósito:
 uma lista vazia em memória seria, na gravação seguinte, uma sobrescrita do ficheiro que
 ainda podia ser recuperado.
+
+Tudo o que o programa escreve no `stderr` — os avisos de tema/cor e os erros de
+arranque — passa por um saneamento: caracteres de controlo saem na forma visível
+`\u{1b}` e o resto (acentos, `«»`, emoji) fica tal e qual. Assim um valor de `--theme`,
+`--color` ou `--config` com sequências de escape (por exemplo a OSC 52, que copia texto
+para a área de transferência) deixa de poder mexer no terminal de quem lê o aviso: o
+valor continua a ver-se, agora legível.
 
 ### Lixo: o «desfazer» que sobrevive ao processo
 
@@ -389,6 +413,14 @@ Importação sem alterações: 3 lidos, 0 inseridos, 3 duplicados ignorados
 ```
 
 Um import que falhe a meio não altera nada, e o erro nomeia o ficheiro e a linha.
+
+O CSV exportado é **fiel** ao que está guardado: não há neutralização de fórmulas (nada
+de prefixar um apóstrofo a títulos que comecem por `=`, `+`, `-` ou `@`), porque isso
+partiria o ciclo exportar→importar — um título `- comprar pão` voltaria do import como
+`'- comprar pão`, sem aviso. Consequência a saber: abrir um CSV com títulos de
+proveniência desconhecida numa **folha de cálculo** (Excel, Calc) pode fazer o programa
+avaliar esses títulos como fórmulas — usa o assistente de importação de texto da folha
+de cálculo e confirma que as colunas ficam como texto.
 
 ### Trazer dados do `rtodo`
 

@@ -238,11 +238,23 @@ fn config_ausente(dir: &Path) -> PathBuf {
 /// **limpas** (o ambiente de quem corre `cargo test` não pode decidir o
 /// resultado), matando-o se não sair dentro do [`PRAZO`].
 fn corre_com(args: &[&str]) -> Output {
-    let mut child = Command::new(BIN)
+    corre_com_env(args, &[])
+}
+
+/// O mesmo, com variáveis de ambiente à escolha: as três de preferência ficam
+/// sempre limpas primeiro, e só as que vierem em `ambiente` são postas.
+fn corre_com_env(args: &[&str], ambiente: &[(&str, &str)]) -> Output {
+    let mut comando = Command::new(BIN);
+    comando
         .args(args)
         .env_remove("TODO_RATATUI_THEME")
         .env_remove("TODO_RATATUI_COLOR")
-        .env_remove("TODO_RATATUI_CONFIG")
+        .env_remove("TODO_RATATUI_CONFIG");
+    for (nome, valor) in ambiente {
+        comando.env(nome, valor);
+    }
+
+    let mut child = comando
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -693,5 +705,175 @@ fn a_ajuda_lista_as_tres_flags_novas() {
         saida.stderr.is_empty(),
         "a ajuda não avisa nada: {}",
         stderr_de(&saida)
+    );
+}
+
+// --------------------------------------------------------------------------
+// Fronteira de impressão (T1, SA-01): nenhum texto que o binário escreve no
+// `stderr` pode conter caracteres de controlo, venha ele do `argv`, de uma
+// variável de ambiente, do `config.json` ou de um caminho. O caso concreto do
+// achado é uma sequência OSC 52 — copia texto para a área de transferência de
+// quem lê o aviso no terminal.
+// --------------------------------------------------------------------------
+
+/// O valor injectado nos testes: `\x1b]52;…\x07` é a OSC 52 do achado, com um
+/// prefixo para o valor não ser confundível com um slug válido.
+const ESCAPE_OSC: &str = "x\x1b]52;c;SGVsbG8=\x07";
+
+/// Nenhum carácter de controlo no `stderr`, além do `\n` que separa linhas: é a
+/// propriedade que o saneamento promete, mais forte do que procurar o ESC.
+fn sem_controlo(stderr: &str) -> bool {
+    stderr.chars().all(|c| c == '\n' || !c.is_control())
+}
+
+/// As três asserções de todos os casos de injecção: nada de controlo, nada do
+/// escape cru, e a forma visível `\u{1b}` presente (prova de que o valor foi
+/// saneado e não simplesmente engolido).
+fn saneado(stderr: &str, o_que: &str) {
+    assert!(
+        sem_controlo(stderr),
+        "{o_que}: o stderr tem caracteres de controlo: {stderr:?}"
+    );
+    for proibido in ['\x1b', '\x07', '\x00'] {
+        assert!(
+            !stderr.contains(proibido),
+            "{o_que}: o stderr tem {proibido:?}: {stderr:?}"
+        );
+    }
+    assert!(
+        stderr.contains("\\u{1b}"),
+        "{o_que}: falta a forma visível «\\u{{1b}}» no stderr: {stderr:?}"
+    );
+}
+
+/// Argumentos com um `db.json` descartável **e** um `--config` que não existe:
+/// nenhum caso destes lê o `config.json` real do utilizador.
+fn args_descartaveis(dir: &Path) -> Vec<String> {
+    let mut argv = args_com_db(dir);
+    argv.push("--config".to_owned());
+    argv.push(config_ausente(dir).display().to_string());
+    argv
+}
+
+#[test]
+fn o_tema_com_escapes_na_env_sai_visivel_no_stderr() {
+    let dir = dir("injecao-env");
+    let argv = args_descartaveis(&dir);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let saida = corre_com_env(&argv, &[("TODO_RATATUI_THEME", ESCAPE_OSC)]);
+    let stderr = stderr_de(&saida);
+
+    saneado(&stderr, "tema pela env");
+    assert!(
+        stderr.contains("TODO_RATATUI_THEME") && stderr.contains("]52;c;SGVsbG8="),
+        "o aviso continua a nomear a fonte e o valor: {stderr:?}"
+    );
+}
+
+#[test]
+fn o_tema_com_escapes_na_flag_sai_visivel_no_stderr() {
+    let dir = dir("injecao-flag");
+    let mut argv = args_descartaveis(&dir);
+    argv.push("--theme".to_owned());
+    argv.push(ESCAPE_OSC.to_owned());
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let stderr = stderr_de(&corre_com(&argv));
+
+    saneado(&stderr, "tema pela flag");
+    assert!(
+        stderr.contains("--theme"),
+        "o aviso nomeia a flag: {stderr:?}"
+    );
+}
+
+#[test]
+fn o_tema_com_escapes_no_config_sai_visivel_no_stderr() {
+    let dir = dir("injecao-config");
+    // No JSON os dois caracteres vão escapados (`\u001b`, `\u0007`): um
+    // carácter de controlo cru dentro de uma string não é JSON válido, e o
+    // `serde_json` recusá-lo-ia antes de o valor chegar ao aviso.
+    let config = dir.join("config.json");
+    fs::write(&config, r#"{"theme": "x\u001b]52;c;SGVsbG8=\u0007"}"#)
+        .expect("escrever o config.json envenenado");
+
+    let mut argv = args_com_db(&dir);
+    argv.push("--config".to_owned());
+    argv.push(config.display().to_string());
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let stderr = stderr_de(&corre_com(&argv));
+
+    saneado(&stderr, "tema pelo config.json");
+    assert!(
+        stderr.contains("config.json") && stderr.contains("desconhecido"),
+        "o aviso vem da cadeia do tema: {stderr:?}"
+    );
+}
+
+#[test]
+fn o_argumento_desconhecido_com_escapes_sai_visivel_no_stderr() {
+    let dir = dir("injecao-argv");
+    let mut argv = args_descartaveis(&dir);
+    // Sem `=` de propósito: com um `=` o `parse_args` partia o argumento ao
+    // meio e o escape já não chegava inteiro à mensagem.
+    argv.push("--nao-existe\x1b]52;c\x07".to_owned());
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let saida = corre_com(&argv);
+    let stderr = stderr_de(&saida);
+
+    assert!(
+        !saida.status.success(),
+        "um argumento desconhecido recusa o arranque"
+    );
+    saneado(&stderr, "argumento desconhecido");
+    assert!(
+        stderr.contains("argumento desconhecido") && stderr.contains("--nao-existe"),
+        "a mensagem continua a dizer o que se passou: {stderr:?}"
+    );
+}
+
+#[test]
+fn o_caminho_da_base_de_dados_com_escapes_sai_visivel_no_stderr() {
+    let dir = dir("injecao-caminho");
+    // O erro de leitura nomeia o caminho: é por aqui que um `--db` com escapes
+    // chegava ao terminal.
+    let db = dir.join(format!("db{ESCAPE_OSC}.json"));
+    fs::write(&db, b"{ isto nao e json ").expect("escrever lixo");
+
+    let mut argv = args_descartaveis(&dir);
+    argv[1] = db.display().to_string();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let stderr = stderr_de(&corre_com(&argv));
+
+    saneado(&stderr, "caminho do --db");
+    assert!(
+        stderr.contains("]52;c;SGVsbG8=") && stderr.contains("JSON inválido"),
+        "a mensagem nomeia o ficheiro e o que se passou: {stderr:?}"
+    );
+}
+
+#[test]
+fn o_saneamento_nao_mexe_no_que_nao_e_ascii() {
+    let dir = dir("injecao-acentos");
+    let mut argv = args_descartaveis(&dir);
+    argv.push("--theme".to_owned());
+    // Um *slug* inválido com acentos: tem de sair inteiro e legível. É o que
+    // distingue o helper do `char::escape_default`, que daria `caf\u{e9}`.
+    argv.push("café ☕".to_owned());
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let stderr = stderr_de(&corre_com(&argv));
+
+    assert!(
+        stderr.contains("«café ☕»"),
+        "o valor acentuado saiu adulterado: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("\\u{e9}") && !stderr.contains("\\u{20}"),
+        "o saneamento escapou não-ASCII: {stderr:?}"
     );
 }

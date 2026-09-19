@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local, NaiveDate};
 use serde::Deserialize;
 
+use super::atomic;
 use super::model::{Priority, Todo, TodoId};
 use super::ops::trim_trash;
 use super::store::{Db, SCHEMA_VERSION, Store, StoreError, Trashed};
@@ -255,15 +256,14 @@ pub fn export_csv_to_path(todos: &[Todo], path: &Path) -> Result<usize, ExportEr
             source,
         })?;
     }
-    let tmp = path.with_file_name(format!(
-        "{}.tmp",
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "export.csv".to_owned())
-    ));
+    let tmp = atomic::tmp_path_for(path);
 
     let escrito = {
-        let ficheiro = fs::File::create(&tmp).map_err(|source| ExportError::Io {
+        // `criar_privado` e não `fs::File::create`: o nome do temporário é
+        // derivado do destino (logo previsível) e o `create` seguia um symlink
+        // ou um hard link lá plantado, além de deixar o modo ao `umask`
+        // (SA-02/SA-03).
+        let ficheiro = atomic::criar_privado(&tmp).map_err(|source| ExportError::Io {
             path: tmp.clone(),
             source,
         })?;
@@ -766,6 +766,7 @@ mod tests {
     use crate::core::Store;
     use crate::core::ops::TRASH_LIMIT;
     use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
     use std::str::FromStr;
     use uuid::Uuid;
 
@@ -1354,5 +1355,57 @@ mod tests {
             .expect("o registo legado continua a ser lido como legado");
         assert_eq!(antiga.priority, Priority::High, "o `time` do rtodo mapeia");
         assert_ne!(antiga.id.as_str(), "nova-1", "o legado ganha id novo");
+    }
+
+    // ------------------------------------------------------------- SA-02/03
+
+    /// Os bits de permissão do caminho, sem o tipo (`0o600`, …).
+    fn modo(path: &Path) -> u32 {
+        fs::metadata(path).expect("metadados").permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn o_csv_exportado_nasce_privado_e_sem_temporario() {
+        let (_, mut store) = nova_loja("csv-privado");
+        store.add("privada").unwrap();
+        let dir = dir("csv-privado-destino");
+        let path = dir.join("saida.csv");
+
+        export_csv_to_path(store.todos(), &path).expect("exportar");
+
+        assert_eq!(modo(&path), 0o600, "o CSV exportado nasce 0600");
+        assert!(
+            !crate::core::atomic::tmp_path_for(&path).exists(),
+            "ficou o temporário do export"
+        );
+    }
+
+    /// O temporário do export é `<destino>.tmp`, logo previsível: um symlink lá
+    /// plantado não pode redireccionar a escrita (o `File::create` de antes
+    /// atravessava-o).
+    #[test]
+    fn symlink_no_temporario_do_csv_nao_redirecciona_a_escrita() {
+        let (_, mut store) = nova_loja("csv-symlink");
+        store.add("tarefa").unwrap();
+        let dir = dir("csv-symlink-destino");
+        let path = dir.join("saida.csv");
+        let vitima = dir.join("vitima.txt");
+        fs::write(&vitima, "conteudo da vitima").expect("escrever a vítima");
+        std::os::unix::fs::symlink(&vitima, crate::core::atomic::tmp_path_for(&path))
+            .expect("plantar o symlink");
+
+        export_csv_to_path(store.todos(), &path).expect("o export tem de suceder");
+
+        assert_eq!(
+            fs::read_to_string(&vitima).expect("ler a vítima"),
+            "conteudo da vitima",
+            "a escrita atravessou o symlink"
+        );
+        assert!(
+            fs::read_to_string(&path)
+                .expect("ler o CSV")
+                .contains("tarefa"),
+            "o CSV ficou com a tarefa"
+        );
     }
 }

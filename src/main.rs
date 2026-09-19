@@ -86,7 +86,10 @@ fn main() -> ExitCode {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(err) => {
-            eprintln!("erro: {err}\n\n{USAGE}");
+            // O `err` do `parse_args` embute o *token* cru do `argv`: passa pela
+            // fronteira de impressão como tudo o resto que não é literal (o
+            // `USAGE` é, esse, literal). O `\n\n` fica **fora** do saneamento.
+            eprintln!("erro: {}\n\n{USAGE}", arranque::imprimivel(&err));
             return ExitCode::from(2);
         }
     };
@@ -98,7 +101,7 @@ fn main() -> ExitCode {
     let path = match resolve_path(args.db.as_deref()) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("erro: {err}");
+            eprintln!("erro: {}", arranque::imprimivel(&err.to_string()));
             return ExitCode::FAILURE;
         }
     };
@@ -110,10 +113,10 @@ fn main() -> ExitCode {
             // gravação reescreveria o ficheiro que o utilizador ainda podia
             // recuperar. O `Store::open` nunca reescreve o original, e a saída
             // do utilizador é o `.bak`, logo a mensagem nomeia os dois.
-            eprintln!("erro: {err}");
+            eprintln!("erro: {}", arranque::imprimivel(&err.to_string()));
             eprintln!(
                 "a base de dados não foi alterada; a geração anterior está em «{}»",
-                backup_path_for(&path).display()
+                arranque::imprimivel(&backup_path_for(&path).display().to_string())
             );
             return ExitCode::FAILURE;
         }
@@ -130,7 +133,7 @@ fn main() -> ExitCode {
     match tui::run(store, &sessao) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("erro: {err}");
+            eprintln!("erro: {}", arranque::imprimivel(&err.to_string()));
             ExitCode::FAILURE
         }
     }

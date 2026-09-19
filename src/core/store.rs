@@ -322,7 +322,9 @@ impl Store {
 
         let parent = self.path.parent().filter(|p| !p.as_os_str().is_empty());
         if let Some(dir) = parent {
-            fs::create_dir_all(dir).map_err(|source| StoreError::Io {
+            // `0700` quando é o programa a criar o directório dos dados; um que
+            // já exista fica como está (ADR §Decisão 4).
+            atomic::criar_directorio_privado(dir).map_err(|source| StoreError::Io {
                 path: dir.to_path_buf(),
                 source,
             })?;
@@ -368,7 +370,26 @@ impl Store {
         }
         let pre_restore = self.pre_restore_path();
         if self.path.is_file() {
-            fs::copy(&self.path, &pre_restore).map_err(|source| StoreError::Io {
+            // Pelo helper de `atomic`, e não por `fs::copy`: o `copy` é o
+            // `O_CREAT|O_TRUNC` de sempre — segue um symlink plantado num
+            // caminho que aqui é **fixo e previsível**, e deixa o modo ao
+            // `umask` (os achados SA-02/SA-03). O conteúdo passa a ir pelo
+            // descritor que o `create_new` abriu, com `sync_all` antes de o
+            // `.bak` ocupar o lugar do `db.json`.
+            let mut origem = File::open(&self.path).map_err(|source| StoreError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+            let mut destino =
+                atomic::criar_privado(&pre_restore).map_err(|source| StoreError::Io {
+                    path: pre_restore.clone(),
+                    source,
+                })?;
+            io::copy(&mut origem, &mut destino).map_err(|source| StoreError::Io {
+                path: pre_restore.clone(),
+                source,
+            })?;
+            destino.sync_all().map_err(|source| StoreError::Io {
                 path: pre_restore.clone(),
                 source,
             })?;
@@ -398,6 +419,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::core::model::Priority;
+    use std::os::unix::fs::PermissionsExt;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!(
@@ -610,5 +632,43 @@ mod tests {
         assert_eq!(recarregado.db().trash.len(), 1);
         assert_eq!(recarregado.db().trash[0].index, 3);
         assert_eq!(recarregado.db().trash[0].todo.id, todo.id);
+    }
+
+    // ------------------------------------------------------------- SA-02/03
+
+    /// Os bits de permissão do caminho, sem o tipo (`0o600`, `0o700`, …).
+    fn modo(path: &Path) -> u32 {
+        fs::metadata(path).expect("metadados").permissions().mode() & 0o777
+    }
+
+    /// A gravação é o sítio onde o programa cria o directório dos dados, o
+    /// `db.json`, o `.bak` e o pré-restore: todos nascem privados. O `.bak` é o
+    /// caso que o `mode(0o600)` do temporário **não** fechava, porque o
+    /// `rename` lhe dá o modo do ficheiro rodado.
+    #[test]
+    fn gravacao_cria_o_directorio_e_os_ficheiros_privados() {
+        let base = temp_dir("privado");
+        // O directório da aplicação ainda não existe: quem o cria é a primeira
+        // gravação.
+        let dir = base.join("todo-ratatui");
+        let path = dir.join(DB_FILE_NAME);
+        let mut store = Store::open(&path).expect("abrir");
+
+        let mut db = Db::empty();
+        db.todos
+            .push(crate::core::model::Todo::try_new("privada").unwrap());
+        store.save_db(db).expect("primeira gravação");
+        assert_eq!(modo(&dir), 0o700, "o directório criado pelo programa");
+        assert_eq!(modo(&path), 0o600, "o db.json");
+
+        let mut db = store.db().clone();
+        db.todos
+            .push(crate::core::model::Todo::try_new("segunda").unwrap());
+        store.save_db(db).expect("segunda gravação");
+        assert_eq!(modo(&store.backup_path()), 0o600, "o .bak rotado");
+
+        let pre_restore = store.restore_backup().expect("restaurar");
+        assert_eq!(modo(&pre_restore), 0o600, "o estado anterior ao restore");
+        assert_eq!(modo(&path), 0o600, "o destino depois do restore");
     }
 }
