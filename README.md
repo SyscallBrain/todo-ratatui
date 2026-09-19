@@ -13,62 +13,63 @@ projectos, mas um `db.json` antigo entra por importação — ver
 todo-ratatui                            18 tarefas · 15 pendentes · 3 concluídas
 ────────────────────────────────────────────────────────────────────────────────
 filtro: todas · ordem: prioridade                                         criada
-▶ [ ] H Rever o PR do dashboard                                             hoje
-  [ ] H Backup do vault para o NAS                                          hoje
-  [ ] H Marcar consulta no dentista                                         hoje
-  [ ] H Ler o capítulo sobre o backend                                      hoje
-  [ ] H Configurar o tmux no portátil                                       hoje
-  [ ] M Renovar o Cartão de Cidadão                                         hoje
-  [ ] M Escrever o post sobre ratatui                                       hoje
-  [ ] M Pagar a conta da luz                                                hoje
-  [ ] M Testar o TestBackend a 120x32                                       hoje
-  [ ] M Actualizar o firmware do router                                     hoje
-  [ ] L Comprar café em grão na Nota Roja                                   hoje
-  [ ] L Instalar a FiraCode Nerd Font                                       hoje
-  [ ] L Rever o ADR do bridge WhatsApp                                      hoje
-  [ ] L Arranjar o teclado do portátil                                      hoje
-  [ ] L Levar o carro à revisão                                             hoje
-  [x] H Exportar as tarefas para CSV                                      ✓ hoje
-  [x] M Fechar a issue do parsing de datas                                ✓ hoje
-  [x] L Planear a semana                                                  ✓ hoje
+▶ [ ] H Rever o PR do dashboard                      Trabalho               hoje
+  [ ] H Backup do vault BrainStorm para o NAS com v… Backups do se…         hoje
+  [ ] H Marcar consulta no dentista                  Saúde                  hoje
+  [ ] H Ler o capítulo sobre o backend               Leituras               hoje
+  [ ] H Configurar o tmux no portátil                —                      hoje
+  [ ] M Renovar o Cartão de Cidadão                  Casa                   hoje
+  [ ] M Escrever o post sobre ratatui                TugaTux / blog         hoje
+  [ ] M Pagar a conta da luz                         Casa                   hoje
+  [ ] M Testar o TestBackend a 120x32                —                      hoje
+  [ ] M Actualizar o firmware do router              Casa                   hoje
+  [ ] L Comprar café em grão na Nota Roja            Casa                   hoje
+  [ ] L Instalar a FiraCode Nerd Font                —                      hoje
+  [ ] L Rever o ADR do bridge WhatsApp               Trabalho               hoje
+  [ ] L Arranjar o teclado do portátil               —                      hoje
+  [ ] L Levar o carro à revisão                      —                      hoje
+  [x] H Exportar as tarefas para CSV                 Trabalho             ✓ hoje
+  [x] M Fechar a issue do parsing de datas           Trabalho             ✓ hoje
+  [x] L Planear a semana                             —                    ✓ hoje
 ────────────────────────────────────────────────────────────────────────────────
 Descrição: ver os comentários do reviewer antes de mexer
 a nova  e editar  Espaço concluir  d remover  u desfazer  / buscar  ? ajuda
 ```
 
-*Ecrã real de uma sessão a 80×24* (`tmux`, binário de release, 18 tarefas e três já
-concluídas). A 120×32 aparece também o painel da tarefa selecionada, a partir de 96×28:
+*Ecrã real de uma sessão a 80×24* (`tmux`, binário de release, 18 tarefas, três já
+concluídas e as categorias atribuídas — a coluna entre o título e a data). A 120×32 aparece também
+o painel da tarefa selecionada, a partir de 96×28, com a linha `Categoria`:
 
 ```
 todo-ratatui                                                                    18 tarefas · 15 pendentes · 3 concluídas
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 filtro: todas · ordem: prioridade                                                                                 criada
-▶ [ ] H Rever o PR do dashboard                                                                                     hoje
-  [ ] H Backup do vault para o NAS                                                                                  hoje
-  [ ] H Marcar consulta no dentista                                                                                 hoje
-  [ ] H Ler o capítulo sobre o backend                                                                              hoje
-  [ ] H Configurar o tmux no portátil                                                                               hoje
-  [ ] M Renovar o Cartão de Cidadão                                                                                 hoje
-  [ ] M Escrever o post sobre ratatui                                                                               hoje
-  [ ] M Pagar a conta da luz                                                                                        hoje
-  [ ] M Testar o TestBackend a 120x32                                                                               hoje
-  [ ] M Actualizar o firmware do router                                                                             hoje
-  [ ] L Comprar café em grão na Nota Roja                                                                           hoje
-  [ ] L Instalar a FiraCode Nerd Font                                                                               hoje
-  [ ] L Rever o ADR do bridge WhatsApp                                                                              hoje
-  [ ] L Arranjar o teclado do portátil                                                                              hoje
-  [ ] L Levar o carro à revisão                                                                                     hoje
-  [x] H Exportar as tarefas para CSV                                                                              ✓ hoje
-  [x] M Fechar a issue do parsing de datas                                                                        ✓ hoje
-  [x] L Planear a semana                                                                                          ✓ hoje
-
+▶ [ ] H Rever o PR do dashboard                                                              Trabalho               hoje
+  [ ] H Backup do vault BrainStorm para o NAS com verificação de checksums                   Backups do se…         hoje
+  [ ] H Marcar consulta no dentista                                                          Saúde                  hoje
+  [ ] H Ler o capítulo sobre o backend                                                       Leituras               hoje
+  [ ] H Configurar o tmux no portátil                                                        —                      hoje
+  [ ] M Renovar o Cartão de Cidadão                                                          Casa                   hoje
+  [ ] M Escrever o post sobre ratatui                                                        TugaTux / blog         hoje
+  [ ] M Pagar a conta da luz                                                                 Casa                   hoje
+  [ ] M Testar o TestBackend a 120x32                                                        —                      hoje
+  [ ] M Actualizar o firmware do router                                                      Casa                   hoje
+  [ ] L Comprar café em grão na Nota Roja                                                    Casa                   hoje
+  [ ] L Instalar a FiraCode Nerd Font                                                        —                      hoje
+  [ ] L Rever o ADR do bridge WhatsApp                                                       Trabalho               hoje
+  [ ] L Arranjar o teclado do portátil                                                       —                      hoje
+  [ ] L Levar o carro à revisão                                                              —                      hoje
+  [x] H Exportar as tarefas para CSV                                                         Trabalho             ✓ hoje
+  [x] M Fechar a issue do parsing de datas                                                   Trabalho             ✓ hoje
+  [x] L Planear a semana                                                                     —                    ✓ hoje
 
 
 ─ selecionada ──────────────────────────────────────────────────────────────────────────────────────────────────────────
   Título      Rever o PR do dashboard
   Descrição   ver os comentários do reviewer antes de mexer
-  Prioridade  Alta (H)    ·    criada 2026-09-18 20:10    ·    concluída —
-  Prazo       —    ·    id ded86370-3cf3-4fa8-b2e0-26cb9482aa37
+  Categoria   Trabalho
+  Prioridade  Alta (H)    ·    criada 2026-09-19 14:58    ·    concluída —
+  Prazo       —    ·    id b69a0c0c-282f-49eb-af36-0d2741cf172a
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 a nova  e editar  Espaço concluir  d remover  u desfazer  / buscar  ? ajuda
@@ -232,7 +233,11 @@ o nome, não o `id` — as tarefas da categoria continuam a ser as mesmas.
 `d` é a segunda operação do programa **sem undo** por trás (a primeira é esvaziar o lixo): a
 primeira pressão arma uma guarda de cinco segundos e a linha de estado diz o preço —
 `Eliminar «Trabalho»? 2 tarefas ficam sem categoria` —, o rodapé passa a
-`d outra vez confirma · Esc cancela` e qualquer outra tecla desarma. A segunda pressão
+`d outra vez confirma · Esc cancela` e a barra do fundo passa a `d confirmar  Esc cancela` (a
+tecla viva aqui é o `d`; o `c` é tecla morta dentro da caixa). A guarda desarma com
+`Esc`, ao fim de 5 segundos, ou com qualquer outra tecla que faça alguma coisa neste contexto.
+Uma tecla morta aqui (o `c` dentro da caixa de categorias, por exemplo, ou um `Release`) não
+desarma: não se perde por reflexo o que se acabou de pedir. A segunda pressão
 elimina: as tarefas da categoria, **na lista e no lixo**, ficam sem categoria, e a contagem é
 anunciada (`Eliminada «Trabalho» · 2 tarefas ficaram sem categoria`). Recriar a categoria é uma
 linha; a atribuição das tarefas não volta sozinha — é por isso que a guarda existe.
@@ -401,7 +406,7 @@ de escrita atómica do `db.json`) — é configuração, não dado (ver
 [Temas](#temas)).
 
 O **formato dos dados mudou na v1.2**: o envelope passa a
-`{schema, todos, trash, trash_dropped, categories, dangling_recovered}` com `schema: 3` (ver
+`{schema, todos, trash, trash_dropped, categories}` com `schema: 3` (ver
 [Formato em disco](#formato-em-disco)). Um ficheiro escrito pela v1.1.0 abre nesta versão sem
 conversão nem aviso e é reescrito como `3` na gravação seguinte; o contrário **não** vale — a
 v1.1.0 recusa um ficheiro `3`, com a mensagem do `schema`, e não lhe toca. O tema vive fora dos
@@ -446,7 +451,9 @@ operação **sem undo**, e por isso a única que pede duas pressões:
 Esvaziar o lixo? 3 entradas, sem volta atrás  ·  c outra vez confirma
 ```
 
-A guarda desarma em 5 segundos ou com qualquer outra tecla.
+A guarda desarma com `Esc`, ao fim de 5 segundos, ou com qualquer outra tecla que faça alguma
+coisa neste contexto: uma tecla morta não desarma — não se perde por reflexo o que se acabou de
+pedir.
 
 ### Import e export
 
@@ -488,9 +495,16 @@ ignorados, e a linha 22 diz o que entrou (o que não aconteceu não se escreve):
 
 ```
 Importado: 2 lidos, 2 inseridos, 0 duplicados ignorados, 1 sem data legível
-Importado: 4 lidos, 4 inseridos, 0 duplicados ignorados, 3 categorias criadas
+Importado: 4 lidos, 4 inseridos, 0 duplicados ignorados, 3 cat. criadas
 Importação sem alterações: 3 lidos, 0 inseridos, 3 duplicados ignorados
 ```
+
+O relatório é composto **por partes**, por ordem de gravidade — a prova
+(`lidos`/`inseridos`/`duplicados ignorados`) sempre à frente, depois as perdas que não se vêem
+(`sem categoria`, `sem data legível`), o que se vê e se repõe (`no lixo`) e, por fim, os
+contadores de categorias. A 80 colunas a linha tem 79 úteis: quando as partes não cabem todas,
+a linha fecha com `, …` e o que sai é sempre o fim da lista — o corte cai numa fronteira de
+contador, nunca a meio de uma palavra.
 
 Um import que falhe a meio não altera nada, e o erro nomeia o ficheiro e a linha.
 
@@ -588,17 +602,27 @@ O CSV do `rtodo` antigo fica de fora: esta versão importa o CSV que ela própri
       "id": "2f1c0f9c-4b4a-4e0f-9c1a-6f0a1b2c3d4e",
       "name": "Café e compras"
     }
-  ],
-  "dangling_recovered": 0
+  ]
 }
 ```
 
 A geração é a **`schema: 3`**, a das categorias: `categories` é a lista (por ordem de
-inserção), `category_id` é a categoria de cada tarefa (`null` quando não tem nenhuma) e
-`dangling_recovered` conta as referências a categorias que não resolvem — um ficheiro editado
-à mão, dois ficheiros fundidos — que a leitura normalizou para `null`. O princípio é **uma
-tarefa nunca se perde nem fica escondida por causa de uma categoria**, e a contagem fica
-gravada no ficheiro para não depender de a aplicação ainda estar de pé quando ele foi lido.
+inserção) e `category_id` é a categoria de cada tarefa (`null` quando não tem nenhuma). O
+princípio é **uma tarefa nunca se perde nem fica escondida por causa de uma categoria**: um
+`category_id` que não resolve — ficheiro editado à mão, dois ficheiros fundidos — fica `null` na
+leitura, e a tarefa continua visível e sem categoria.
+
+E **a leitura di-lo**: quando normaliza uma referência, a linha 22 nasce com
+
+```
+Aviso: 2 tarefas sem categoria — a categoria não existe  ·  C categorias
+```
+
+A contagem é a **daquela leitura** — lista e lixo — e não vai para o ficheiro: enquanto a
+referência pendente lá estiver, o aviso volta a nascer em cada abertura; depois da primeira
+gravação que a cure, cala-se. O aviso é `sticky` (não expira aos 3 s), sai com `Esc` e é a única
+mensagem que a aplicação cria sem uma tecla a pedi-la. Uma chave a mais no ficheiro — de uma
+versão futura ou de outra ferramenta — é ignorada na leitura e não sobrevive à gravação seguinte.
 
 Um ficheiro **`2`** (o da v1.1.0) abre nesta versão **sem conversão nem aviso**: as chaves que
 ele não tem nascem vazias, nenhuma tarefa muda, e a gravação seguinte escreve `3` — e roda a
@@ -627,11 +651,11 @@ Não se estraga nada: o ficheiro `3` continua a abrir aqui, e a saída é a de s
 - `src/main.rs` — terminal e arranque.
 
 ```sh
-cargo test                                  # 264 testes, incluindo os goldens
+cargo test                                  # 273 testes, incluindo os goldens
 cargo clippy --all-targets -- -D warnings
 ```
 
-Os 26 ficheiros de `tests/frames/` são *golden files*: o ecrã desenhado é comparado linha a
+Os 27 ficheiros de `tests/frames/` são *golden files*: o ecrã desenhado é comparado linha a
 linha com eles, a 80×24 e a 120×32.
 
 ## Licença

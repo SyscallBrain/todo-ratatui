@@ -19,6 +19,12 @@
 //! binário que ignora campos que não conhece apagá-los-ia na gravação seguinte,
 //! e recusar e dizê-lo é a única versão desta decisão em que nada se perde em
 //! silêncio (ADR §Decisão 3).
+//!
+//! O `Db` também **tolera a mais**: uma chave que não conheça é ignorada na
+//! leitura e desaparece na gravação seguinte. É o que acontece ao
+//! `dangling_recovered` — um contador de v1.2.0 que nunca chegou a ser
+//! publicado e que saiu do `schema: 3` (ADR Adenda 1): nenhum ficheiro no
+//! caminho de dados do utilizador o tem, mas um que o tenha abre sem erro.
 
 use std::collections::HashSet;
 use std::env;
@@ -87,15 +93,6 @@ pub struct Db {
     /// esta chave — ler-se como vazio (ADR §Decisão 3).
     #[serde(default)]
     pub categories: Vec<Category>,
-    /// Quantas referências pendentes a leitura já corrigiu.
-    ///
-    /// Um `category_id` que não resolve numa categoria existente é posto a
-    /// `None` na leitura (ver [`Store::normalizar_referencias`]) e contado
-    /// **aqui**, persistido como o `trash_dropped`: o aviso de que uma
-    /// atribuição não se perdeu em silêncio não pode depender de a aplicação
-    /// ainda estar de pé quando o ficheiro foi lido.
-    #[serde(default)]
-    pub dangling_recovered: u64,
 }
 
 impl Db {
@@ -107,7 +104,6 @@ impl Db {
             trash: Vec::new(),
             trash_dropped: 0,
             categories: Vec::new(),
-            dangling_recovered: 0,
         }
     }
 }
@@ -250,6 +246,13 @@ pub fn backup_path_for(path: &Path) -> PathBuf {
 pub struct Store {
     path: PathBuf,
     db: Db,
+    /// Quantas referências pendentes **esta leitura** corrigiu (ADR Adenda 1).
+    ///
+    /// É contagem de leitura, não dado: não vai para o ficheiro e não se
+    /// acumula entre sessões. Vive aqui para quem abriu a base poder dizer o
+    /// que a leitura normalizou sem voltar a percorrer as tarefas — a `Db`
+    /// entregue não guarda rasto de quantas referências corrigiu.
+    referencias_recuperadas: u64,
 }
 
 impl Store {
@@ -257,15 +260,19 @@ impl Store {
     /// diretório-pai é criado só na primeira escrita).
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let path = path.into();
-        let db = if path.exists() {
+        let (db, referencias_recuperadas) = if path.exists() {
             Self::load(&path)?
         } else {
-            Db::empty()
+            (Db::empty(), 0)
         };
-        Ok(Self { path, db })
+        Ok(Self {
+            path,
+            db,
+            referencias_recuperadas,
+        })
     }
 
-    fn load(path: &Path) -> Result<Db, StoreError> {
+    fn load(path: &Path) -> Result<(Db, u64), StoreError> {
         let bytes = fs::read(path).map_err(|source| StoreError::Io {
             path: path.to_path_buf(),
             source,
@@ -314,12 +321,12 @@ impl Store {
         // sem ter de saber de onde veio — é isso que faz o `save` emitir sempre
         // [`SCHEMA_VERSION`] sem um caso especial lá dentro.
         db.schema = SCHEMA_VERSION;
-        Self::normalizar_referencias(&mut db);
-        Ok(db)
+        let referencias_recuperadas = Self::normalizar_referencias(&mut db);
+        Ok((db, referencias_recuperadas))
     }
 
     /// Põe a `None` qualquer `category_id` que não resolva numa categoria
-    /// existente — na lista **e** no lixo — e conta os que corrigiu.
+    /// existente — na lista **e** no lixo — e devolve quantos corrigiu.
     ///
     /// Um ficheiro editado à mão (ou fundido com outro) pode trazer um `uuid`
     /// que não existe. Recusar arrancar por causa disso puniria o dono dos
@@ -329,13 +336,15 @@ impl Store {
     /// `delete_category` faz (T2), e sem isso o `u` repunha uma tarefa a
     /// apontar para uma categoria que não existe.
     ///
-    /// A contagem do ficheiro **acumula** (como o `trash_dropped`): ler de novo
-    /// o mesmo ficheiro, que ainda tem a referência, dá o mesmo número, porque
-    /// cada leitura parte do valor em disco.
+    /// A contagem é **desta leitura** (ADR Adenda 1): quantas referências
+    /// o ficheiro que acabou de ser lido trazia por resolver. Não se acumula
+    /// nem vai para o disco — enquanto a referência pendente lá estiver, cada
+    /// abertura volta a contá-la e a avisar; a primeira gravação que a cure
+    /// cala o aviso.
     ///
     /// Esta leitura **não escreve nada**: o valor corrigido só vai para o disco
     /// na próxima gravação, como qualquer alteração.
-    fn normalizar_referencias(db: &mut Db) {
+    fn normalizar_referencias(db: &mut Db) -> u64 {
         let conhecidas: HashSet<CategoryId> = db.categories.iter().map(|c| c.id.clone()).collect();
         let mut corrigidas = 0u64;
         for todo in db
@@ -354,7 +363,7 @@ impl Store {
             todo.category_id = None;
             corrigidas += 1;
         }
-        db.dangling_recovered = db.dangling_recovered.saturating_add(corrigidas);
+        corrigidas
     }
 
     #[must_use]
@@ -370,6 +379,17 @@ impl Store {
     #[must_use]
     pub fn todos(&self) -> &[Todo] {
         &self.db.todos
+    }
+
+    /// Quantas referências de categoria **a leitura que abriu esta base**
+    /// normalizou para «sem categoria» (ADR Adenda 1).
+    ///
+    /// Conta a lista **e** o lixo — é o que a leitura percorre — e é zero no
+    /// caso normal. Quem avisa é quem abre: o [`crate::tui::app::App`] nasce
+    /// com o aviso quando este número não é zero.
+    #[must_use]
+    pub const fn referencias_recuperadas(&self) -> u64 {
+        self.referencias_recuperadas
     }
 
     pub fn db_mut(&mut self) -> &mut Db {
@@ -432,12 +452,17 @@ impl Store {
     }
 
     /// Recarrega o ficheiro do disco.
+    ///
+    /// É uma leitura como a da abertura: a contagem de referências recuperadas
+    /// passa a ser a desta leitura (ADR Adenda 1).
     pub fn reload(&mut self) -> Result<(), StoreError> {
-        self.db = if self.path.exists() {
+        let (db, referencias_recuperadas) = if self.path.exists() {
             Self::load(&self.path)?
         } else {
-            Db::empty()
+            (Db::empty(), 0)
         };
+        self.db = db;
+        self.referencias_recuperadas = referencias_recuperadas;
         Ok(())
     }
 
@@ -828,7 +853,11 @@ mod tests {
         assert_eq!(store.todos()[1].category_id, Some(categoria.clone()));
         assert_eq!(store.db().categories.len(), 1);
         assert_eq!(store.db().categories[0].name, "Trabalho");
-        assert_eq!(store.db().dangling_recovered, 0, "não havia nada pendente");
+        assert_eq!(
+            store.referencias_recuperadas(),
+            0,
+            "não havia nada pendente"
+        );
 
         store.save().expect("gravar");
         let valor: serde_json::Value =
@@ -856,13 +885,51 @@ mod tests {
             serde_json::from_slice(&fs::read(&path).expect("ler")).expect("json");
         assert_eq!(valor["schema"], serde_json::json!(3));
         assert_eq!(valor["categories"], serde_json::json!([]));
-        assert_eq!(valor["dangling_recovered"], serde_json::json!(0));
+        assert!(
+            valor.get("dangling_recovered").is_none(),
+            "a chave saiu do `schema: 3` (ADR Adenda 1): a contagem é da leitura"
+        );
+    }
+
+    /// Um ficheiro da v1.2.0 não publicada, que ainda tenha o
+    /// `dangling_recovered`, **abre sem erro**: o `Db` não recusa chaves a mais
+    /// (e a chave desaparece na gravação seguinte). É o que faz a saída do
+    /// campo ser uma não-migração.
+    #[test]
+    fn chave_a_mais_no_ficheiro_le_se_sem_erro_e_sai_na_gravacao() {
+        let dir = temp_dir("chave-a-mais");
+        let path = dir.join(DB_FILE_NAME);
+        fs::write(
+            &path,
+            r#"{
+  "schema": 3,
+  "todos": [],
+  "trash": [],
+  "categories": [],
+  "dangling_recovered": 7
+}"#,
+        )
+        .expect("escrever");
+
+        let store = Store::open(&path).expect("um ficheiro com a chave a mais lê-se");
+        assert_eq!(
+            store.referencias_recuperadas(),
+            0,
+            "a chave é ignorada: não é dela que sai a contagem"
+        );
+        store.save().expect("gravar");
+        let valor: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("reler")).expect("json");
+        assert!(
+            valor.get("dangling_recovered").is_none(),
+            "uma gravação desta versão não volta a emitir a chave: {valor}"
+        );
     }
 
     /// Uma referência que não resolve não esconde nem perde a tarefa: fica
-    /// **visível** e sem categoria, conta-se no `dangling_recovered`, e o
-    /// ficheiro em disco **não é tocado** — uma leitura nunca reescreve dados
-    /// do utilizador (é o byte-a-byte que prova isto).
+    /// **visível** e sem categoria, conta-se como referência recuperada **da
+    /// leitura**, e o ficheiro em disco **não é tocado** — uma leitura nunca
+    /// reescreve dados do utilizador (é o byte-a-byte que prova isto).
     #[test]
     fn referencia_orfa_e_normalizada_sem_tocar_no_ficheiro() {
         let dir = temp_dir("categoria-orfa");
@@ -895,7 +962,7 @@ mod tests {
             None,
             "a referência pendente saiu"
         );
-        assert_eq!(store.db().dangling_recovered, 1);
+        assert_eq!(store.referencias_recuperadas(), 1);
 
         let depois = fs::read(&path).expect("reler bytes");
         assert_eq!(
@@ -903,10 +970,73 @@ mod tests {
             "uma leitura não reescreve o ficheiro do utilizador"
         );
 
-        // Reler o mesmo ficheiro (ainda pendente) conta o mesmo: a contagem
-        // parte do que está em disco, não da `Db` em memória.
+        // Reler o mesmo ficheiro (ainda pendente) conta outra vez o mesmo: a
+        // contagem é desta leitura, não um acumulado em disco (ADR Adenda 1).
         let outra = Store::open(&path).expect("reabrir");
-        assert_eq!(outra.db().dangling_recovered, 1);
+        assert_eq!(outra.referencias_recuperadas(), 1);
+    }
+
+    /// A contagem é da **leitura**, e a leitura percorre a lista **e** o lixo:
+    /// uma referência pendente em cada dá **2**. Depois de uma gravação que
+    /// cure o ficheiro, a abertura seguinte já não conta nada — é o que faz o
+    /// aviso nascer em cada abertura enquanto o ficheiro estiver por curar e
+    /// calar-se depois.
+    #[test]
+    fn contagem_soma_lista_e_lixo_e_cala_se_depois_da_gravacao() {
+        let dir = temp_dir("categoria-orfa-soma");
+        let path = dir.join(DB_FILE_NAME);
+        fs::write(
+            &path,
+            r#"{
+  "schema": 3,
+  "todos": [
+    {
+      "id": "t1",
+      "title": "na lista",
+      "created_at": "2026-09-19T09:00:00+01:00",
+      "category_id": "sumiu-1"
+    }
+  ],
+  "trash": [
+    {
+      "todo": {
+        "id": "t2",
+        "title": "no lixo",
+        "created_at": "2026-09-19T09:00:00+01:00",
+        "category_id": "sumiu-2"
+      },
+      "index": 1,
+      "deleted_at": "2026-09-19T10:00:00+01:00",
+      "batch": 1
+    }
+  ],
+  "categories": []
+}"#,
+        )
+        .expect("escrever");
+        let antes = fs::read(&path).expect("ler bytes");
+
+        let store = Store::open(&path).expect("abre");
+        assert_eq!(
+            store.referencias_recuperadas(),
+            2,
+            "uma na lista e uma no lixo: as duas que a leitura normalizou"
+        );
+        assert_eq!(store.todos().len(), 1, "a tarefa da lista continua visível");
+        assert_eq!(store.todos()[0].category_id, None);
+        assert_eq!(
+            fs::read(&path).expect("reler bytes"),
+            antes,
+            "ler não grava"
+        );
+
+        store.save().expect("gravar a base curada");
+        let depois = Store::open(&path).expect("reabrir");
+        assert_eq!(
+            depois.referencias_recuperadas(),
+            0,
+            "o ficheiro já está curado: a abertura seguinte não avisa"
+        );
     }
 
     /// O lixo é normalizado também: sem isto, o `u` repunha uma tarefa a apontar
@@ -942,7 +1072,7 @@ mod tests {
         let store = Store::open(&path).expect("abre");
         assert_eq!(store.db().trash.len(), 1, "a entrada do lixo continua lá");
         assert_eq!(store.db().trash[0].todo.category_id, None);
-        assert_eq!(store.db().dangling_recovered, 1);
+        assert_eq!(store.referencias_recuperadas(), 1);
     }
 
     /// Um ficheiro de uma geração futura é recusado — e a recusa não lhe toca:
@@ -989,11 +1119,11 @@ mod tests {
         }
     }
 
-    /// Gravar e reler devolve a mesma `Db` — categorias e contagem incluídas —
-    /// e a contagem que veio do ficheiro **não cresce** ao reler uma `Db` sem
-    /// referências pendentes.
+    /// Gravar e reler devolve a mesma `Db` — categorias incluídas — e a
+    /// contagem de referências recuperadas **não vai para o ficheiro**: uma
+    /// releitura de uma base sem referências pendentes conta zero.
     #[test]
-    fn round_trip_preserva_categories_e_dangling_recovered() {
+    fn round_trip_preserva_as_categorias_sem_persistir_contagem() {
         let dir = temp_dir("categorias-round-trip");
         let path = dir.join(DB_FILE_NAME);
         let trabalho = Category {
@@ -1013,7 +1143,6 @@ mod tests {
                 crate::core::model::Todo::try_new("sem categoria").unwrap(),
             ],
             categories: vec![trabalho, casa],
-            dangling_recovered: 2,
             ..Db::empty()
         };
 
@@ -1023,9 +1152,9 @@ mod tests {
         let recarregado = Store::open(&path).expect("reabrir");
         assert_eq!(recarregado.db(), &esperada);
         assert_eq!(
-            recarregado.db().dangling_recovered,
-            2,
-            "não cresce sem nada pendente"
+            recarregado.referencias_recuperadas(),
+            0,
+            "nada estava pendente — a contagem é da leitura (ADR Adenda 1)"
         );
     }
 }

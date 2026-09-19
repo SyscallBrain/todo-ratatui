@@ -264,39 +264,76 @@ pub struct ImportReport {
     pub categorias_reaproveitadas: usize,
     /// Tarefas que vinham com um `category_id` que não resolve — nem numa
     /// categoria do ficheiro, nem numa da base: entraram **sem categoria** e
-    /// são contadas aqui (é o mesmo caso que o `store` conta em
-    /// `dangling_recovered`). Um campo vazio ou ausente não conta: não houve
-    /// referência nenhuma para falhar.
+    /// são contadas aqui (é o mesmo caso que a leitura da base conta como
+    /// referência recuperada — `Store::referencias_recuperadas`, ADR Adenda 1;
+    /// aqui é a conta **desta operação**, não a de um ficheiro). Um campo vazio
+    /// ou ausente não conta: não houve referência nenhuma para falhar.
     pub sem_categoria: usize,
 }
 
+/// `1 lido` / `2 lidos`: o número com a palavra certa (§C.4.1).
+///
+/// A concordância é parte do relatório — `1 categorias criadas` era o que saía
+/// antes desta correcção.
+fn concordancia(n: usize, singular: &str, plural: &str) -> String {
+    if n == 1 {
+        format!("{n} {singular}")
+    } else {
+        format!("{n} {plural}")
+    }
+}
+
 impl ImportReport {
+    /// As partes do relatório, por ordem de gravidade (§C.4.1).
+    ///
+    /// A **prova** — `N lidos`, `N inseridos`, `N duplicados ignorados` — sai
+    /// sempre, mesmo a zero: é ela que diz que nada foi duplicado, e é o
+    /// propósito do relatório. As restantes só aparecem quando aconteceram,
+    /// como o `lixo` e o `sem_data` de sempre.
+    ///
+    /// Cada parte é uma unidade: quem junta é quem sabe a largura, e o corte
+    /// cai sempre **numa fronteira de contador** — nunca a meio de uma palavra
+    /// (a TUI compõe até às 79 colunas da linha 22 e fecha com `, …` quando
+    /// alguma fica de fora).
+    #[must_use]
+    pub fn partes(&self) -> Vec<String> {
+        let mut partes = vec![
+            concordancia(self.lidos, "lido", "lidos"),
+            concordancia(self.inseridos, "inserido", "inseridos"),
+            concordancia(
+                self.duplicados,
+                "duplicado ignorado",
+                "duplicados ignorados",
+            ),
+        ];
+        // Ordem de gravidade: as duas perdas **invisíveis** (a atribuição e a
+        // data) à frente do que se vê e se repõe (o lixo) e dos dois
+        // contadores de informação.
+        let opcionais = [
+            (self.sem_categoria, "sem categoria", "sem categoria"),
+            (self.sem_data, "sem data legível", "sem data legível"),
+            (self.lixo, "no lixo", "no lixo"),
+            (self.categorias_criadas, "cat. criada", "cat. criadas"),
+            (
+                self.categorias_reaproveitadas,
+                "reaproveitada",
+                "reaproveitadas",
+            ),
+        ];
+        for (n, singular, plural) in opcionais {
+            if n > 0 {
+                partes.push(concordancia(n, singular, plural));
+            }
+        }
+        partes
+    }
+
+    /// O relatório numa linha, sem largura nenhuma: é a junção das
+    /// [`partes`](Self::partes). Quem desenha compõe as partes com o orçamento
+    /// de colunas que tem — esta forma serve quem quer o relatório inteiro.
     #[must_use]
     pub fn resumo(&self) -> String {
-        let mut partes = vec![format!(
-            "{} lidos, {} inseridos, {} duplicados ignorados",
-            self.lidos, self.inseridos, self.duplicados
-        )];
-        if self.lixo > 0 {
-            partes.push(format!("{} no lixo", self.lixo));
-        }
-        if self.sem_data > 0 {
-            partes.push(format!("{} sem data legível", self.sem_data));
-        }
-        // Como o `lixo` e o `sem_data`: só aparece o que aconteceu.
-        if self.categorias_criadas > 0 {
-            partes.push(format!("{} categorias criadas", self.categorias_criadas));
-        }
-        if self.categorias_reaproveitadas > 0 {
-            partes.push(format!(
-                "{} categorias reaproveitadas",
-                self.categorias_reaproveitadas
-            ));
-        }
-        if self.sem_categoria > 0 {
-            partes.push(format!("{} sem categoria", self.sem_categoria));
-        }
-        partes.join(", ")
+        self.partes().join(", ")
     }
 
     /// Nada foi alterado (tudo duplicado e nenhuma categoria nova).
@@ -1446,14 +1483,28 @@ mod tests {
         };
         assert_eq!(
             relatorio.resumo(),
-            "10 lidos, 7 inseridos, 3 duplicados ignorados, 1 no lixo, 2 sem data legível"
+            "10 lidos, 7 inseridos, 3 duplicados ignorados, 2 sem data legível, 1 no lixo"
+        );
+        assert_eq!(
+            relatorio.partes(),
+            [
+                "10 lidos",
+                "7 inseridos",
+                "3 duplicados ignorados",
+                "2 sem data legível",
+                "1 no lixo"
+            ],
+            "a ordem é a da gravidade (§C.4.1)"
         );
         assert!(!relatorio.sem_alteracoes());
         assert!(ImportReport::default().sem_alteracoes());
     }
 
     /// A linha que o utilizador lê quando o import trouxe categorias: cada
-    /// contador só aparece quando não é zero, como o `lixo` e o `sem_data`.
+    /// contador novo só aparece quando não é zero, como o `lixo` e o
+    /// `sem_data`, e a **prova** (`lidos`/`inseridos`/`duplicados ignorados`)
+    /// sai sempre — mesmo a zero —, porque é ela que diz que nada foi
+    /// duplicado (é a razão de ser do relatório).
     #[test]
     fn relatorio_do_import_conta_as_categorias() {
         let relatorio = ImportReport {
@@ -1466,10 +1517,24 @@ mod tests {
         };
         assert_eq!(
             relatorio.resumo(),
-            "3 lidos, 3 inseridos, 0 duplicados ignorados, 1 categorias criadas, \
-             1 categorias reaproveitadas, 2 sem categoria"
+            "3 lidos, 3 inseridos, 0 duplicados ignorados, 2 sem categoria, \
+             1 cat. criada, 1 reaproveitada"
         );
         assert!(!relatorio.sem_alteracoes());
+
+        // A concordância é do singular: `1 cat. criada`, e não
+        // «1 categorias criadas» como saía antes (§C.4.1).
+        let uma_so = ImportReport {
+            lidos: 1,
+            inseridos: 1,
+            categorias_criadas: 1,
+            sem_categoria: 1,
+            ..ImportReport::default()
+        };
+        assert_eq!(
+            uma_so.resumo(),
+            "1 lido, 1 inserido, 0 duplicados ignorados, 1 sem categoria, 1 cat. criada"
+        );
 
         // Só as categorias (um envelope com categorias e zero tarefas novas)
         // já é uma alteração: dizer «sem alterações» seria falso.
@@ -2225,8 +2290,8 @@ mod tests {
         let relatorio = import_csv_from_path(&mut store, &path).unwrap();
         assert_eq!(
             relatorio.resumo(),
-            "3 lidos, 3 inseridos, 0 duplicados ignorados, 1 categorias criadas, \
-             1 categorias reaproveitadas"
+            "3 lidos, 3 inseridos, 0 duplicados ignorados, 1 cat. criada, \
+             1 reaproveitada"
         );
         assert_eq!(
             store.categories().len(),

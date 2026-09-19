@@ -374,6 +374,32 @@ fn app_da_lista(tag: &str) -> (PathBuf, App) {
     app_com(tag, tarefas_do_frame(), lixo_do_frame(), Some(1))
 }
 
+/// A base de `80x24-26-referencias-recuperadas`: as **duas tarefas concluídas**
+/// do fixture — as que mostram `—` na coluna da categoria — trazem um
+/// `category_id` que não resolve.
+///
+/// É a leitura que normaliza e conta (ADR Adenda 1), por isso o `Store` é
+/// **reaberto** depois de gravado, em vez de reusado em memória: o frame fixa o
+/// estado do `App` que nasceu dessa leitura. As duas tarefas escolhidas são as
+/// que já mostravam `—`, e é isso que faz o golden diferir do `80x24-1-normal`
+/// numa só linha, a 22.
+fn app_com_referencias_pendentes(tag: &str) -> (PathBuf, App) {
+    let mut base = base(tag);
+    {
+        let db = base.store.db_mut();
+        db.todos = tarefas_do_frame();
+        db.trash = lixo_do_frame();
+        db.categories = categorias_do_frame();
+        db.todos[7].category_id = Some(CategoryId::from("categoria-que-nao-existe".to_owned()));
+        db.todos[8].category_id = Some(CategoryId::from("outra-que-nao-existe".to_owned()));
+    }
+    base.store.save().expect("gravar o fixture");
+    let store = Store::open(&base.caminho).expect("reabrir o fixture");
+    let mut app = App::new(store);
+    app.list_state.select(Some(1));
+    (base.caminho, app)
+}
+
 // ------------------------------------------------------------------ teclas
 
 fn carrega(app: &mut App, tecla: char) {
@@ -1291,6 +1317,13 @@ fn frame_20_categorias_erro_vazio() {
 /// Guarda armada antes de eliminar (`d` uma vez): a mensagem diz o preço exacto
 /// — quantas tarefas ficam sem categoria — e o rodapé da caixa passa a anunciar
 /// só as duas teclas vivas (§C.2, §C.5).
+///
+/// O golden mudou **uma** linha no fecho do T7 (M2): a barra do fundo dizia
+/// `c confirmar  Esc cancela` — a constante do lixo, com o `c` que é **tecla
+/// morta** dentro da caixa (`event::map_category`, `_ => Action::Ignore`) —
+/// enquanto a borda da caixa já anunciava `d outra vez confirma · Esc cancela`.
+/// O ecrã dava duas instruções diferentes para o mesmo estado, e a do fundo
+/// mandava carregar numa tecla sem efeito.
 #[test]
 fn frame_21_categorias_guarda() {
     let (_caminho, mut app) = app_da_lista("categorias-guarda");
@@ -1308,8 +1341,8 @@ fn frame_21_categorias_guarda() {
     );
     assert!(ecra.linhas[18].contains("d outra vez confirma · Esc cancela"));
     assert_eq!(
-        ecra.linhas[23], "c confirmar  Esc cancela",
-        "o mesmo estado do lixo armado, o mesmo desenho"
+        ecra.linhas[23], "d confirmar  Esc cancela",
+        "a barra nomeia a tecla viva da caixa (o `d`), e não a do lixo (M2 do T7)"
     );
     assert_eq!(
         ecra.estilo(12, 17).fg,
@@ -1426,6 +1459,134 @@ fn frame_25_categorias_sem_tarefas() {
     );
 }
 
+/// O aviso da abertura com referências de categoria recuperadas (§C.5.1, ADR
+/// Adenda 1): o `App` nasce com uma mensagem `sticky` na linha 22 — é a única
+/// que a aplicação cria sem uma tecla a pedi-la.
+///
+/// A lista fica **exactamente** como estava (os dois `category_id` que não
+/// resolvem estavam nas duas tarefas concluídas, que já mostravam `—`): o que
+/// muda em relação ao `80x24-1-normal` é uma linha, e é a 22.
+#[test]
+fn frame_26_referencias_recuperadas() {
+    let (_caminho, app) = app_com_referencias_pendentes("referencias-recuperadas");
+    assert_eq!(
+        app.store().referencias_recuperadas(),
+        2,
+        "uma por cada referência que aquela leitura normalizou"
+    );
+
+    let ecra = assert_frame("80x24-26-referencias-recuperadas", &app, 80, 24);
+
+    assert_eq!(
+        ecra.linhas[22],
+        "Aviso: 2 tarefas sem categoria — a categoria não existe  ·  C categorias"
+    );
+    assert!(
+        ecra.linhas[22].width() <= 79,
+        "o aviso cabe nas 79 colunas úteis da linha 22: {}",
+        ecra.linhas[22].width()
+    );
+    assert_eq!(
+        ecra.estilo(0, 22).fg,
+        app.theme.fg.fg,
+        "o aviso é `fg`, como todas as mensagens da linha 22 (só o erro é `err`)"
+    );
+    assert!(
+        !ecra.linhas[22].contains("Descrição:"),
+        "a mensagem ganha à descrição do selecionado (§4): a alteração que \
+         aconteceu sem o utilizador saber vem primeiro"
+    );
+}
+
+/// O relatório do import no ecrã mais estreito (M3 do T7): a 80×24 a linha 22
+/// tem 79 colunas úteis, e a **prova** — `lidos`, `inseridos`, `duplicados
+/// ignorados` — fica inteira, com o `, …` a marcar o que não coube (§C.4.1).
+///
+/// O import é conduzido pelas teclas (`i`, o caminho, `Enter`): é a mensagem
+/// que o `App` escreve que está a ser medida, não uma composta pelo teste. O
+/// lote é um array JSON — é o formato em que cabem, na mesma linha, as cinco
+/// partes que a fazem transbordar.
+#[test]
+fn o_relatorio_do_import_cabe_a_80x24() {
+    const LOTE: &str = r#"[
+  {"id":"t1","title":"um","created_at":"2026-09-18T10:00:00+01:00"},
+  {"id":"t2","title":"dois","created_at":"2026-09-18T10:00:00+01:00"},
+  {"id":"t3","title":"tres","created_at":"2026-09-18T10:00:00+01:00"},
+  {"id":"t4","title":"quatro","created_at":"2026-09-18T10:00:00+01:00"},
+  {"id":"t5","title":"cinco","created_at":"2026-09-18T10:00:00+01:00","category_id":"nao-existe"},
+  {"id":"t6","title":"seis","created_at":"2026-09-18T10:00:00+01:00","category_id":"nao-existe"},
+  {"id":"t1","title":"um repetido","created_at":"2026-09-18T10:00:00+01:00"},
+  {"id":"t2","title":"dois repetido","created_at":"2026-09-18T10:00:00+01:00"},
+  {"title":"antiga","description":"","done":false,"time":"Low","date":""}
+]"#;
+
+    let (_caminho, mut app) =
+        app_com_categorias("relatorio-import", Vec::new(), Vec::new(), None, Vec::new());
+
+    let curto = uuid::Uuid::new_v4().simple().to_string();
+    let dir =
+        std::env::temp_dir().join(format!("tr-import-{}-{}", std::process::id(), &curto[..8]));
+    fs::create_dir_all(&dir).expect("criar o directório do lote");
+    let json = dir.join("lote.json");
+    fs::write(&json, LOTE).expect("escrever o lote");
+
+    carrega(&mut app, 'i');
+    escreve(&mut app, json.to_str().expect("caminho do lote"));
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let ecra = desenhar(&app, 80, 24);
+    let linha = &ecra.linhas[22];
+    assert_eq!(
+        linha, "Importado: 9 lidos, 7 inseridos, 2 duplicados ignorados, 2 sem categoria, …",
+        "a prova fica inteira e o corte cai numa fronteira de contador"
+    );
+    assert!(
+        linha.width() <= 79,
+        "{} colunas úteis: {linha}",
+        linha.width()
+    );
+    assert!(
+        !linha.contains("categorias criadas") && !linha.contains("categorias reaproveitadas"),
+        "os rótulos longos saíram do relatório: {linha}"
+    );
+}
+
+/// Uma mensagem que não caiba deixa **sempre** `…` e nunca uma palavra partida
+/// (§C.4.1): quem corta é a linha 22, não o `ratatui` (que cortaria à largura e
+/// sem marca nenhuma).
+#[test]
+fn mensagem_longa_corta_com_reticencias_e_nunca_a_meio_de_palavra() {
+    const TEXTO: &str = "Importação sem alterações: 120 lidos, 100 inseridos, \
+                         20 duplicados ignorados, 1 sem categoria, 1 sem data legível";
+
+    let (_caminho, mut app) = app_da_lista("mensagem-longa");
+    app.status = Status::message(TEXTO.to_owned());
+
+    let ecra = desenhar(&app, 80, 24);
+    let linha = &ecra.linhas[22];
+
+    assert!(linha.ends_with('…'), "o corte é marcado: |{linha}|");
+    assert!(
+        linha.width() <= 79,
+        "{} colunas úteis: |{linha}|",
+        linha.width()
+    );
+    let corte = linha.strip_suffix('…').expect("termina em `…`");
+    assert!(TEXTO.starts_with(corte), "o corte é um prefixo: |{linha}|");
+    let seguinte = TEXTO[corte.len()..]
+        .chars()
+        .next()
+        .expect("o texto original continua depois do corte");
+    assert!(
+        !seguinte.is_alphanumeric(),
+        "o corte partiu uma palavra: |{linha}| (a seguir vem {seguinte:?})"
+    );
+    assert!(
+        linha.contains("120 lidos") && linha.contains("100 inseridos"),
+        "a prova do import fica à frente do corte: |{linha}|"
+    );
+}
+
 /// Painel de detalhe: só existe a partir de 96×28 (o corte é medido em colunas
 /// × linhas, não em pixéis).
 #[test]
@@ -1499,7 +1660,7 @@ fn nomes_dos_frames() -> Vec<String> {
 }
 
 #[test]
-fn os_vinte_e_seis_goldens_estao_no_repo() {
+fn os_vinte_e_sete_goldens_estao_no_repo() {
     assert_eq!(
         nomes_dos_frames(),
         [
@@ -1522,6 +1683,7 @@ fn os_vinte_e_seis_goldens_estao_no_repo() {
             "80x24-23-filtro-categoria",
             "80x24-24-ordem-categoria",
             "80x24-25-categorias-sem-tarefas",
+            "80x24-26-referencias-recuperadas",
             "80x24-3-adicionar",
             "80x24-4-adicionar-vazio",
             "80x24-5-undo",
@@ -1530,14 +1692,14 @@ fn os_vinte_e_seis_goldens_estao_no_repo() {
             "80x24-8-vazio",
             "80x24-9-sem-resultados",
         ],
-        "os 26 goldens fazem parte do repositório (§C.8: 11 novos, 15 da v1.1)"
+        "os 27 goldens fazem parte do repositório (§C.8: 26 do T6 + o aviso da abertura, §C.5.1)"
     );
 }
 
 /// Cada ficheiro de `tests/frames/` tem de estar nomeado por um teste que o
 /// compara: um golden que ninguém compara é documentação, não teste. O nome
 /// aparece nos testes **sem** o `.txt` (é assim que o `assert_frame` o leva), e
-/// é essa a agulha — a lista dos 26 escreve-os com extensão e não conta.
+/// é essa a agulha — a lista dos 27 escreve-os com extensão e não conta.
 #[test]
 fn cada_frame_tem_o_seu_teste() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");

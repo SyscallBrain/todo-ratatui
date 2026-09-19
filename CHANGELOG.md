@@ -40,15 +40,24 @@ tarefas.
   colunas (59 → 44 a 80×24; 84 a 120×32).
 - **A guarda de duas pressões passa a ter alvo** (`Guarda::{EsvaziarLixo, EliminarCategoria}`):
   o `c` da vista do lixo e o `d` da caixa de categorias deixam de partilhar um sinalizador, que
-  é como se esvaziaria o lixo a eliminar uma categoria.
+  é como se esvaziaria o lixo a eliminar uma categoria. Com a guarda armada na caixa, a barra do
+  fundo diz `d confirmar  Esc cancela` — a tecla que lá está viva, e não o `c` do lixo, morto
+  dentro da caixa.
+- **O aviso da abertura, quando a leitura recupera referências** — um `category_id` que não
+  resolve (ficheiro editado à mão, ficheiros fundidos) fica `null` na leitura e a linha 22 di-lo:
+  `Aviso: 2 tarefas sem categoria — a categoria não existe  ·  C categorias`. É `sticky` (não
+  expira aos 3 s), sai com `Esc` e é a única mensagem que a aplicação cria sem uma tecla a
+  pedi-la. A contagem é a **daquela leitura** (lista e lixo) e não vai para o ficheiro: enquanto
+  a referência lá estiver, cada abertura volta a avisar; depois da primeira gravação que a cure,
+  cala-se.
 
 ### Alterado
 
 - **O formato em disco passa a `schema: 3`**: entram `categories` (a lista, por ordem de
-  inserção), `category_id` por tarefa e `dangling_recovered` — as referências a categorias que
-  não resolvem (ficheiro editado à mão, ficheiros fundidos) são normalizadas para `null` na
-  leitura e **contadas no ficheiro**, para o número não depender de a aplicação ainda estar de
-  pé quando ele foi lido. A leitura aceita `2` e `3`; a gravação emite sempre `3`. **Um
+  inserção) e `category_id` por tarefa. A leitura aceita `2` e `3`; a gravação emite sempre `3`.
+  As referências a categorias que não resolvem (ficheiro editado à mão, ficheiros fundidos) são
+  normalizadas para `null` **na leitura**, que não escreve nada: cada abertura volta a encontrá-las
+  e a anunciá-las (ver o aviso, acima), até uma gravação as curar. **Um
   ficheiro `3` não abre na v1.1.0**: essa versão recusa o arranque com
   `schema 3 … não é suportado (esperado 2)` e não lhe toca — a saída é o `.bak`, que fica com a
   geração anterior.
@@ -59,13 +68,17 @@ tarefas.
   nome desconhecido é **criado**, um existente — mesmo com outras maiúsculas — é
   **reaproveitado**, e uma categoria nova só nasce para as tarefas que entram de facto (um CSV
   reimportado não inventa categorias). O relatório do import ganha as contagens de categorias
-  criadas e reaproveitadas e de tarefas que ficaram sem categoria.
+  criadas e reaproveitadas e de tarefas que ficaram sem categoria, passa a compor-se **por partes**
+  por ordem de gravidade (a prova `lidos`/`inseridos`/`duplicados ignorados` sempre à frente, os
+  rótulos mais curtos e com a concordância certa: `1 lido`, `1 cat. criada`) e fecha com `, …`
+  quando não cabe nas 79 colunas úteis da linha 22 — o corte cai numa fronteira de contador,
+  nunca a meio de uma palavra.
 - **A ajuda `?`** ganha `F  filtrar categoria` e `C` (na linha do `T`) **sem crescer**: para
   abrir espaço, `j / ↓` e `k / ↑` fundem-se numa linha e `f  filtrar` passa a `f  filtrar
   estado`. O `s` inclui a categoria no ciclo e o `Esc` limpa os três eixos.
-- **Os *golden files***: 11 novos (a caixa de categorias e os seus estados, o filtro, a ordem
-  por categoria), 10 alterados (a coluna da categoria em todas as linhas da lista e a ajuda do
-  `?`) e 5 iguais — os do lixo, que não mostra categorias.
+- **Os *golden files***: 12 novos (a caixa de categorias e os seus estados, o filtro, a ordem
+  por categoria e o aviso da abertura), 10 alterados (a coluna da categoria em todas as linhas da
+  lista e a ajuda do `?`) e 5 iguais — os do lixo, que não mostra categorias.
 - **`README.md`** documenta a caixa, o filtro, o CSV de 9 colunas e o formato `3`, e o âmbito
   passa a ser o da v1.2: a linha que punha «tags» fora sai (a resposta a esse pedido é **uma**
   categoria por tarefa; etiquetas múltiplas continuam fora) e a lista do que fica fora fica

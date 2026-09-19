@@ -23,8 +23,9 @@ use super::event::{Action, InputMode, map_key};
 use super::theme::{CATALOGO, ModoCor, Theme};
 // O corte em colunas é o mesmo do desenho (`ui::cortar`): um só sítio mede
 // `café` como quatro colunas, e a mensagem da eliminação corta o **nome**, nunca
-// a contagem (§C.4).
-use super::ui::cortar;
+// a contagem (§C.4). A composição do relatório do import também é de lá: as
+// partes são do `core`, as colunas são da TUI (§C.4.1).
+use super::ui::{compor_relatorio, cortar};
 
 /// Janela da guarda do `c` no lixo: a segunda pressão tem de vir dentro deste
 /// tempo, e qualquer outra acção desarma (§5, mudança 7).
@@ -122,6 +123,25 @@ fn mensagem_eliminada(nome: &str, afectadas: usize) -> String {
     }
 }
 
+/// O aviso da abertura quando a leitura normalizou referências de categoria
+/// (§C.5.1, ADR Adenda 1): `Aviso: N tarefa(s) sem categoria — a categoria não
+/// existe  ·  C categorias`.
+///
+/// Nasce **sozinho** — é a única mensagem que a aplicação cria sem uma tecla a
+/// pedi-la — porque é a única alteração de dados do utilizador que acontecia sem
+/// ele saber: um `category_id` que não resolve fica `None` na leitura, a tarefa
+/// continua visível e a primeira gravação consolidava a correcção em silêncio.
+///
+/// A concordância é a das outras mensagens que contam (`1 tarefa`, `2 tarefas`)
+/// e poupa uma coluna no caso mais frequente; medido a 74 das 79 colunas da
+/// linha 22 no pior caso realista. A dica é o `C`: a tecla viva que resolve o
+/// caso (abre a caixa, onde a tarefa se volta a atribuir) e a única deste estado
+/// que não está na barra de ajuda em repouso.
+fn aviso_de_referencias(n: u64) -> String {
+    let palavra = if n == 1 { "tarefa" } else { "tarefas" };
+    format!("Aviso: {n} {palavra} sem categoria — a categoria não existe  ·  C categorias")
+}
+
 /// O que a linha 22 mostra (§4). A precedência — erro > mensagem > descrição do
 /// selecionado > vazio — é do T6; aqui só se guarda o que há para mostrar, e o
 /// prazo de cada mensagem.
@@ -137,9 +157,10 @@ pub enum Status {
         /// o instante injectado.
         desde: Instant,
     },
-    /// Mensagem que **não** expira: o undo disponível e o aviso de transbordo
-    /// (§4). O sinalizador é explícito — quem cria a mensagem é que sabe o
-    /// prazo — e não um `contains(UNDO_HINT)` sobre o texto.
+    /// Mensagem que **não** expira: o undo disponível, o aviso de transbordo e o
+    /// aviso de referências recuperadas na abertura (§4, §C.5.1). O sinalizador
+    /// é explícito — quem cria a mensagem é que sabe o prazo — e não um
+    /// `contains(UNDO_HINT)` sobre o texto.
     Sticky(String),
     /// Erro: vermelho e com o prefixo «Erro:» no T6. Nunca expira sozinho.
     Error(String),
@@ -289,6 +310,11 @@ impl App {
     ///
     /// O cursor da caixa abre na posição do tema **aplicado**, e não na primeira
     /// do catálogo: é o que faz o `Enter` sem navegar não mudar nada.
+    ///
+    /// Uma excepção ao `status` inicial `Idle`: se a leitura que criou o [`Store`]
+    /// normalizou referências de categoria, o `App` nasce com o aviso `sticky` da
+    /// §C.5.1 (ADR Adenda 1) — a alteração que aconteceu sem o utilizador saber
+    /// é a primeira coisa que ele lê.
     #[must_use]
     pub fn com_tema(
         store: Store,
@@ -319,6 +345,13 @@ impl App {
             armado: None,
             quitting: false,
         };
+        // O aviso da abertura (§C.5.1): nasce do que **esta leitura** normalizou
+        // — é ela que conta, não o ficheiro (ADR Adenda 1). Sem referências
+        // recuperadas o `App` nasce em `Idle`, como sempre.
+        let recuperadas = app.store.referencias_recuperadas();
+        if recuperadas > 0 {
+            app.status = Status::sticky(aviso_de_referencias(recuperadas));
+        }
         app.clamp_selection();
         app
     }
@@ -1438,11 +1471,15 @@ impl App {
                 match import_from_path(&mut self.store, Path::new(&caminho)) {
                     Ok(relatorio) => {
                         let prefixo = if relatorio.sem_alteracoes() {
-                            "Importação sem alterações"
+                            "Importação sem alterações: "
                         } else {
-                            "Importado"
+                            "Importado: "
                         };
-                        self.status = Status::message(format!("{prefixo}: {}", relatorio.resumo()));
+                        // As partes são do `core`, a largura é da TUI: a linha
+                        // junta-as até às 79 colunas da linha 22 e fecha com
+                        // `, …` — o corte cai numa fronteira de contador (§C.4.1).
+                        self.status =
+                            Status::message(compor_relatorio(prefixo, &relatorio.partes()));
                         self.clamp_selection();
                     }
                     Err(err) => self.status = Status::error(format!("Erro: {err}")),
@@ -2114,6 +2151,80 @@ mod tests {
             "o aviso de transbordo é permanente: {:?}",
             tui.status
         );
+    }
+
+    /// Um ficheiro com uma referência de categoria que não resolve: a leitura
+    /// normaliza-a, conta-a e o `App` nasce com o aviso da §C.5.1 (ADR
+    /// Adenda 1) — é a única mensagem que a aplicação cria sem uma tecla a
+    /// pedi-la.
+    fn app_com_referencia_pendente(tag: &str) -> App {
+        let dir = std::env::temp_dir().join(format!(
+            "todo-ratatui-app-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).expect("criar diretório de teste");
+        let path = dir.join("db.json");
+        fs::write(
+            &path,
+            r#"{
+  "schema": 3,
+  "todos": [
+    {
+      "id": "t1",
+      "title": "sem categoria conhecida",
+      "created_at": "2026-09-19T09:00:00+01:00",
+      "category_id": "categoria-que-nao-existe"
+    }
+  ],
+  "trash": [],
+  "categories": []
+}"#,
+        )
+        .expect("escrever a referência pendente");
+        let store = Store::open(&path).expect("abrir");
+        App::new(store)
+    }
+
+    /// O aviso da abertura nasce `sticky`: não expira aos 3 s (o `tick` não lhe
+    /// toca) e a primeira acção toma-lhe o lugar — como qualquer `sticky` (§4).
+    #[test]
+    fn aviso_da_abertura_nasce_sticky_e_a_accao_seguinte_substitui_o() {
+        let mut tui = app_com_referencia_pendente("aviso-abertura");
+        assert_eq!(
+            tui.status,
+            Status::sticky(
+                "Aviso: 1 tarefa sem categoria — a categoria não existe  ·  C categorias"
+            ),
+            "a contagem é a da leitura que criou o `App`"
+        );
+
+        tui.tick(Instant::now() + Duration::from_secs(600));
+        assert!(
+            matches!(tui.status, Status::Sticky(_)),
+            "o aviso não expira: {:?}",
+            tui.status
+        );
+
+        tecla(&mut tui, ' ');
+        assert!(
+            matches!(tui.status, Status::Message { .. }),
+            "a primeira acção substitui o aviso: {:?}",
+            tui.status
+        );
+        assert_eq!(
+            tui.status.text(),
+            Some("Concluída «sem categoria conhecida»"),
+        );
+    }
+
+    /// Sem referências recuperadas não há aviso nenhum: o caso normal — e o de
+    /// um ficheiro já curado por uma gravação — nasce em `Idle`.
+    #[test]
+    fn sem_referencias_recuperadas_a_abertura_nao_avisa() {
+        let (_path, tui) = app("sem-aviso", &["uma tarefa"]);
+        assert_eq!(tui.store().referencias_recuperadas(), 0);
+        assert_eq!(tui.status, Status::Idle);
     }
 
     /// O `tick` não é um segundo caminho de escrita: expira a mensagem e mais

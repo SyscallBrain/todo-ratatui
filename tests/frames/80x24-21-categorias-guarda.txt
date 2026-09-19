@@ -21,4 +21,4 @@ filtro: todas · ordem: prioridade · lixo: 3 (L)                           cria
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
 Descrição: ver ADR — tmp ao lado do ficheiro, nunca em /tmp                     
-c confirmar  Esc cancela                                                        
+d confirmar  Esc cancela                                                        

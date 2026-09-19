@@ -132,10 +132,24 @@ const BARRA_TEMAS: &str = "Esc volta ao tema de entrada";
 /// A barra de ajuda com a caixa de categorias aberta (§C.2): lá dentro nada da
 /// lista vale, e a única tecla que resta sem consequência é o `Esc`.
 const BARRA_CATEGORIAS: &str = "Esc fecha sem atribuir";
+/// A barra da caixa com a guarda armada (§C.2): nomeia a tecla que lá está
+/// **viva** — o `d`, que é a segunda pressão que elimina.
+///
+/// Não é a [`BARRA_ARMADO`] do lixo: dentro da caixa o `c` é tecla morta
+/// (`event::map_category`, `_ => Action::Ignore`), e o ecrã dizia o contrário
+/// do que a borda da caixa anuncia (`d outra vez confirma · Esc cancela`) — era
+/// o achado M2 do T7. O molde é o mesmo, a tecla é que muda.
+const BARRA_CATEGORIAS_ARMADO: &str = "d confirmar  Esc cancela";
 /// A etiqueta da linha 22 no modo de texto de nomes quando o `Enter` **renomeia**
 /// em vez de criar (`80x24-18-categorias-renomear`): o `label()` do modo é um só
 /// para as duas intenções (§C.4).
 const ETIQUETA_RENOMEAR: &str = "Renomear";
+
+/// Colunas úteis da linha 22 no ecrã mais estreito que a aplicação desenha (§8,
+/// armadilha 3): é o orçamento com que o relatório do import é composto
+/// (§C.4.1). A composição acontece quando a tecla é carregada — antes de haver
+/// ecrã onde medir — e 80 colunas é o piso que a aplicação promete.
+const UTIL_DA_LINHA_22: usize = 79;
 
 // -------------------------------- caixa de categorias: bordas (§C.2, §C.9)
 
@@ -861,17 +875,19 @@ fn mensagem(app: &App, largura: u16, com_painel: bool) -> Line<'static> {
         return entrada(app);
     }
     match &app.status {
-        Status::Error(texto) => Line::from(Span::styled(abreviar(texto, util), app.theme.err)),
+        Status::Error(texto) => {
+            Line::from(Span::styled(texto_da_linha22(texto, util), app.theme.err))
+        }
         // Uma mensagem que não expira desenha-se como qualquer outra: o
         // `sticky` decide o prazo, não o estilo (§4).
         Status::Message { texto, .. } | Status::Sticky(texto) => {
-            Line::from(Span::styled(abreviar(texto, util), app.theme.fg))
+            Line::from(Span::styled(texto_da_linha22(texto, util), app.theme.fg))
         }
         Status::Idle if matches!(app.mode, InputMode::Trash) => pre_visualizacao_do_lixo(app, util),
         Status::Idle if com_painel => Line::default(),
         Status::Idle => match app.selected() {
             Some(todo) if !todo.description.is_empty() => Line::from(Span::styled(
-                abreviar(&format!("Descrição: {}", todo.description), util),
+                texto_da_linha22(&format!("Descrição: {}", todo.description), util),
                 app.theme.fg,
             )),
             _ => Line::default(),
@@ -934,7 +950,7 @@ fn pre_visualizacao_do_lixo(app: &App, util: usize) -> Line<'static> {
     });
     match (posicao, app.selected()) {
         (Some(posicao), Some(todo)) => Line::from(Span::styled(
-            abreviar(
+            texto_da_linha22(
                 &format!(
                     "Enter restaura «{}» para a posição {posicao} da lista",
                     todo.title
@@ -958,10 +974,12 @@ fn barra_de_ajuda(app: &App) -> Line<'static> {
         BARRA_TEMAS
     } else if matches!(app.mode, InputMode::Category) {
         // Com a caixa de categorias aberta resta sair sem atribuir; com a guarda
-        // armada, a barra é a do lixo armado — o mesmo estado, o mesmo desenho
-        // (é o que o frame `80x24-21-categorias-guarda` fixa).
+        // armada, a barra nomeia a tecla que lá está viva — o `d` da segunda
+        // pressão, que é o que a borda da caixa já anuncia (frame
+        // `80x24-21-categorias-guarda`). A tecla do lixo (`c`) é morta aqui
+        // dentro: anunciá-la era o achado M2 do T7.
         if app.categoria_armada().is_some() {
-            BARRA_ARMADO
+            BARRA_CATEGORIAS_ARMADO
         } else {
             BARRA_CATEGORIAS
         }
@@ -1625,6 +1643,84 @@ pub(crate) fn cortar(texto: &str, largura: usize) -> String {
     saida
 }
 
+/// Corta à largura fechando no **último espaço que caiba** e juntando `…`:
+/// nenhuma palavra sai partida (§C.4.1).
+///
+/// Quando o texto não tem um espaço onde cortar — um caminho, uma palavra só —
+/// cai no [`cortar`], que corta no carácter: aí não há palavra inteira que se
+/// salve, e é o `…` que diz que o texto continua.
+fn cortar_em_palavra(texto: &str, largura: usize) -> String {
+    if texto.width() <= largura {
+        return texto.to_owned();
+    }
+    // O `…` ocupa uma coluna: o texto fica com `largura - 1`.
+    let orcamento = largura.saturating_sub(1);
+    let mut corte = None;
+    let mut usado = 0;
+    for (indice, caracter) in texto.char_indices() {
+        let colunas = caracter.width().unwrap_or(0);
+        if usado + colunas > orcamento {
+            break;
+        }
+        usado += colunas;
+        if caracter == ' ' {
+            corte = Some(indice);
+        }
+    }
+    match corte {
+        // A vírgula e o espaço que ficariam pendurados saem com o corte: o `…`
+        // fecha a última palavra inteira, e é isso que se lê.
+        Some(indice) => format!("{}…", texto[..indice].trim_end_matches([' ', ','])),
+        None => cortar(texto, largura),
+    }
+}
+
+/// Texto da linha 22 pronto a escrever: primeiro o [`abreviar`] (o `~` da casa
+/// e o corte pela esquerda dos caminhos), depois o [`cortar_em_palavra`] como
+/// rede de tudo o que ainda não caiba.
+///
+/// É a rede de **todas** as mensagens que a linha 22 desenha a partir do `App`
+/// (§C.4.1): sem ela, quem corta é o `ratatui` — à largura, sem `…` e a meio de
+/// uma palavra.
+fn texto_da_linha22(texto: &str, util: usize) -> String {
+    cortar_em_palavra(&abreviar(texto, util), util)
+}
+
+/// Junta as partes de um relatório até caberem nas [`UTIL_DA_LINHA_22`] colunas
+/// da linha 22, fechando com `, …` quando alguma fica de fora (§C.4.1).
+///
+/// O corte cai sempre **numa fronteira de contador** — as partes são as
+/// unidades, não os caracteres — e a margem de três colunas do `, …` é
+/// reservada antes de aceitar cada parte: sem isso o marcador empurrava a linha
+/// uma coluna além do orçamento. A ordem das partes é a da gravidade (é do
+/// `core`), logo o que sai é sempre o fim da lista.
+#[must_use]
+pub(crate) fn compor_relatorio(prefixo: &str, partes: &[String]) -> String {
+    let mut usadas: Vec<&str> = Vec::new();
+    for (indice, parte) in partes.iter().enumerate() {
+        let mut tentativa = usadas.clone();
+        tentativa.push(parte);
+        // `, …` = três colunas, reservadas enquanto houver partes para lá desta.
+        let margem = if indice + 1 < partes.len() { 3 } else { 0 };
+        let largura = prefixo.width() + tentativa.join(", ").width() + margem;
+        if largura > UTIL_DA_LINHA_22 {
+            break;
+        }
+        usadas.push(parte);
+    }
+    // Nem a primeira parte coube (contagem enorme): fica ela, e o
+    // [`cortar_em_palavra`] do desenho trata do resto.
+    if usadas.is_empty() && !partes.is_empty() {
+        usadas.push(&partes[0]);
+    }
+    let texto = usadas.join(", ");
+    if usadas.len() < partes.len() {
+        format!("{prefixo}{texto}, …")
+    } else {
+        format!("{prefixo}{texto}")
+    }
+}
+
 /// Texto da linha 22 pronto a escrever (§8, armadilha 3): `/home/tiago` passa a
 /// `~` e, se ainda não couber, o caminho corta-se **pela esquerda** com `…`,
 /// porque num caminho a parte útil é o fim.
@@ -1677,6 +1773,7 @@ fn com_maiuscula(texto: &str) -> String {
 #[cfg(test)]
 mod testes {
     use super::*;
+    use crate::core::ImportReport;
     use chrono::NaiveDate;
 
     fn data(ano: i32, mes: u32, dia: u32) -> NaiveDate {
@@ -1804,5 +1901,94 @@ mod testes {
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(texto.find("Trabalho"), Some(93), "x93 a 120 (§C.3)");
+    }
+
+    /// O corte das mensagens fecha numa fronteira de palavra: nenhum texto da
+    /// linha 22 sai com uma palavra partida (M3 do T7, §C.4.1).
+    #[test]
+    fn cortar_em_palavra_nunca_parte_uma_palavra() {
+        let texto = "Importado: 12 lidos, 10 inseridos, 2 duplicados ignorados, 1 sem categoria";
+        assert_eq!(
+            cortar_em_palavra(texto, 60),
+            "Importado: 12 lidos, 10 inseridos, 2 duplicados ignorados…",
+            "corta no último espaço que cabe, não no carácter"
+        );
+        assert!(cortar_em_palavra(texto, 60).width() <= 60);
+
+        // Sem espaço onde cortar (um caminho colado) não há palavra inteira que
+        // se salve: cai no corte por carácter, que pelo menos marca o `…`.
+        assert_eq!(
+            cortar_em_palavra("/home/tiago/.local/share/todo-ratatui/db.json", 20),
+            "/home/tiago/.local/…"
+        );
+        // O que já cabe passa intacto, com ou sem espaços.
+        assert_eq!(cortar_em_palavra("café", 20), "café");
+        assert_eq!(cortar_em_palavra("", 0), "");
+        assert_eq!(cortar_em_palavra("Duas palavras", 13), "Duas palavras");
+    }
+
+    /// O relatório do import é composto por partes até às 79 colunas úteis da
+    /// linha 22, com `, …` no corte — e a **prova** (`lidos`, `inseridos`,
+    /// `duplicados ignorados`) nunca sai do ecrã (§C.4.1).
+    #[test]
+    fn o_relatorio_do_import_e_composto_ate_as_79_colunas() {
+        fn relatorio(lidos: usize, inseridos: usize, duplicados: usize) -> ImportReport {
+            ImportReport {
+                lidos,
+                inseridos,
+                duplicados,
+                ..ImportReport::default()
+            }
+        }
+
+        // O caso do T7 (1 lido, 1 inserido, 1 reaproveitada): cabia inteiro.
+        let completo = ImportReport {
+            categorias_reaproveitadas: 1,
+            ..relatorio(1, 1, 0)
+        };
+        let linha = compor_relatorio("Importado: ", &completo.partes());
+        assert_eq!(
+            linha,
+            "Importado: 1 lido, 1 inserido, 0 duplicados ignorados, 1 reaproveitada"
+        );
+        assert_eq!(linha.width(), 70, "cabe inteira nas 79 colunas úteis");
+
+        // O pior caso realista (2 dígitos, tudo > 0): o corte cai no fim da
+        // ordem de gravidade, e os três contadores da prova ficam à frente.
+        let pior = ImportReport {
+            sem_categoria: 1,
+            sem_data: 1,
+            lixo: 3,
+            categorias_criadas: 2,
+            categorias_reaproveitadas: 1,
+            ..relatorio(12, 10, 2)
+        };
+        let linha = compor_relatorio("Importado: ", &pior.partes());
+        assert_eq!(
+            linha,
+            "Importado: 12 lidos, 10 inseridos, 2 duplicados ignorados, 1 sem categoria, …"
+        );
+        assert_eq!(linha.width(), 77);
+        assert!(linha.width() <= UTIL_DA_LINHA_22);
+
+        // O pior de todos (3 dígitos e o prefixo longo): cabe à justa, e a
+        // prova continua inteira.
+        let maior = ImportReport {
+            sem_categoria: 1,
+            sem_data: 1,
+            lixo: 1,
+            categorias_criadas: 1,
+            categorias_reaproveitadas: 1,
+            ..relatorio(120, 100, 20)
+        };
+        let linha = compor_relatorio("Importação sem alterações: ", &maior.partes());
+        assert_eq!(
+            linha,
+            "Importação sem alterações: 120 lidos, 100 inseridos, 20 duplicados ignorados, …"
+        );
+        assert_eq!(linha.width(), 79, "o orçamento é a linha inteira");
+
+        // Sem partes (relatório vazio) sai só o prefixo, sem `…` pendurado.
+        assert_eq!(compor_relatorio("Importado: ", &[]), "Importado: ");
     }
 }
