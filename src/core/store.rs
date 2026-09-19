@@ -644,7 +644,9 @@ mod tests {
     /// A gravação é o sítio onde o programa cria o directório dos dados, o
     /// `db.json`, o `.bak` e o pré-restore: todos nascem privados. O `.bak` é o
     /// caso que o `mode(0o600)` do temporário **não** fechava, porque o
-    /// `rename` lhe dá o modo do ficheiro rodado.
+    /// `rename` lhe dá o modo do ficheiro rodado — o `db.json` é posto a `664`
+    /// antes da segunda gravação (a instalação da v1.0.1 com `umask 0002`) para
+    /// que seja mesmo o `set_permissions` do `.bak` a fazer o trabalho.
     #[test]
     fn gravacao_cria_o_directorio_e_os_ficheiros_privados() {
         let base = temp_dir("privado");
@@ -661,11 +663,17 @@ mod tests {
         assert_eq!(modo(&dir), 0o700, "o directório criado pelo programa");
         assert_eq!(modo(&path), 0o600, "o db.json");
 
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o664)).expect("modo antigo");
         let mut db = store.db().clone();
         db.todos
             .push(crate::core::model::Todo::try_new("segunda").unwrap());
         store.save_db(db).expect("segunda gravação");
-        assert_eq!(modo(&store.backup_path()), 0o600, "o .bak rotado");
+        assert_eq!(
+            modo(&store.backup_path()),
+            0o600,
+            "o .bak rotado herdou os 664 do db.json que rodou"
+        );
+        assert_eq!(modo(&path), 0o600, "o db.json volta a nascer privado");
 
         let pre_restore = store.restore_backup().expect("restaurar");
         assert_eq!(modo(&pre_restore), 0o600, "o estado anterior ao restore");

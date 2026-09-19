@@ -315,10 +315,13 @@ escreve o caminho completo.
 - **`db.json.pre-restore`** — só existe depois de um restauro desses.
 - **`db.json.tmp`** — só existe durante uma gravação.
 
-**Permissões.** Todo o ficheiro que o programa cria nasce privado (`0600`), e os
-directórios que ele cria nascem `0700`. Isso vale para o `db.json`, o `config.json`, o
-`.tmp`, o `.bak` (que, por ser o ficheiro rodado pelo `rename`, precisou de um ajuste
-explícito — herda o modo do anterior) e o `db.json.pre-restore`. Um directório que
+**Permissões.** Todo o ficheiro que o programa cria nasce privado (`0600`), e os dois
+directórios que ele cria — `~/.local/share/todo-ratatui` e `~/.config/todo-ratatui` —
+nascem `0700`. Os `0600` valem para o `db.json`, o `config.json`, o `.tmp`, o `.bak`
+(que, por ser o ficheiro rodado pelo `rename`, precisou de um ajuste
+explícito — herda o modo do anterior) e o `db.json.pre-restore`. O caminho de destino de
+uma exportação é escolha tua: só o CSV nasce `0600`, e os directórios que o export tiver de
+criar pelo caminho ficam com o modo que o `umask` lhes der. Um directório que
 **já exista** não é tocado: uma instalação da v1.0.x pode ter
 `~/.local/share/todo-ratatui` e `~/.config/todo-ratatui` a `775` (do `umask`), e o
 programa não passa por cima dessa escolha — fecha-os à mão com

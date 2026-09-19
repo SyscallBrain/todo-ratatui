@@ -149,7 +149,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         // custar a gravação dos dados do utilizador. Não se avisa porque o
         // `core` não escreve para o terminal — quem o faz é o `tui`, e a
         // fronteira das camadas é dele (ADR §Decisão 2).
-        let _ = fs::set_permissions(&bak, fs::Permissions::from_mode(0o600));
+        //
+        // Só quando o `.bak` é um ficheiro **regular**. Se o destino era um
+        // symlink (um `--db` a apontar para um link é um uso legítimo — ADR
+        // §SA-02), o `rename` move o *link* para o `.bak` e o
+        // `set_permissions` seguiria esse link: o `chmod` aterraria no
+        // ficheiro apontado, que o programa não criou, sobrepondo-se ao modo
+        // de uma entrada pré-existente (ADR §Decisão 4).
+        if fs::symlink_metadata(&bak).is_ok_and(|meta| meta.file_type().is_file()) {
+            let _ = fs::set_permissions(&bak, fs::Permissions::from_mode(0o600));
+        }
     }
 
     fs::rename(&tmp, path)
@@ -320,6 +329,50 @@ mod tests {
             "o .bak rodado herdou os 664 do ficheiro antigo"
         );
         assert_eq!(modo(&path), 0o600, "o destino volta a nascer privado");
+    }
+
+    /// Um destino que é um **symlink** (uso legítimo: um `--db` a apontar para
+    /// um link) não pode levar o `chmod` do `.bak` até ao ficheiro apontado: o
+    /// `rename` roda o *link*, e o `set_permissions` seguiria-o — o modo de um
+    /// ficheiro que o programa não criou não se sobrepõe (ADR §Decisão 4).
+    /// O `.bak` fica o link rodado (e o seu conteúdo, a geração antiga); o
+    /// destino novo é que nasce regular e `0600`.
+    #[test]
+    fn o_bak_de_um_destino_symlink_nao_muda_o_modo_do_ficheiro_apontado() {
+        let dir = temp_dir("destino-symlink");
+        let alvo = dir.join("alvo.json");
+        let path = dir.join("db.json");
+        fs::write(&alvo, b"geracao antiga").expect("escrever o alvo");
+        fs::set_permissions(&alvo, fs::Permissions::from_mode(0o664)).expect("modo antigo");
+        symlink(&alvo, &path).expect("plantar o symlink");
+
+        write_atomic(&path, b"novo").expect("a gravação tem de suceder");
+
+        assert_eq!(
+            modo(&alvo),
+            0o664,
+            "o chmod do `.bak` atravessou o link e aterrou no ficheiro apontado"
+        );
+        assert_eq!(
+            fs::read(&alvo).expect("ler o alvo"),
+            b"geracao antiga",
+            "a escrita atravessou o link do destino"
+        );
+        assert_eq!(modo(&path), 0o600, "o destino novo nasce 0600");
+        assert!(
+            !fs::symlink_metadata(&path)
+                .expect("metadados do destino")
+                .file_type()
+                .is_symlink(),
+            "o destino tem de ser um ficheiro regular"
+        );
+        assert!(
+            fs::symlink_metadata(backup_path_for(&path))
+                .expect("metadados do bak")
+                .file_type()
+                .is_symlink(),
+            "o `.bak` é o link rodado — é por isso que o chmod tem de ser guardado"
+        );
     }
 
     #[test]

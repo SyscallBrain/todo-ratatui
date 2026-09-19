@@ -67,11 +67,15 @@ formato dos dados: `schema` continua `2` e o `db.json` da v1.0.1 abre sem conver
   transferência de quem lesse o aviso no terminal, e um `\n` forjava uma linha a imitar uma
   mensagem do programa. O texto normal — acentos, `«»`, emoji — sai tal e qual, e o que é
   *guardado* não é tocado: o saneamento é só na impressão.
-- **Os ficheiros criados nascem privados (`0600`) e os directórios que o programa cria a
-  `0700`** — `db.json`, `config.json`, o `.tmp`, o `.bak`, o `db.json.pre-restore` e até o
-  `.tmp` do export CSV. Antes ficavam à mercê do `umask` (0644 com o `umask` habitual),
+- **Os ficheiros criados nascem privados (`0600`) e os directórios que o programa cria
+  (`~/.local/share/todo-ratatui`, `~/.config/todo-ratatui`) a `0700`** — `db.json`,
+  `config.json`, o `.tmp`, o `.bak`, o `db.json.pre-restore` e o CSV do export (e o `.tmp`
+  dele). Antes ficavam à mercê do `umask` (0644 com o `umask` habitual),
   legíveis por qualquer utilizador local. O `.bak` precisou de um passo explícito: o
-  `rename` dá-lhe o modo do ficheiro rodado, e o `0600` do temporário não chegava lá.
+  `rename` dá-lhe o modo do ficheiro rodado, e o `0600` do temporário não chegava lá. Esse
+  passo é omitido quando o `.bak` é o symlink rodado de um destino que era um link (`--db` a
+  apontar para um symlink): o `chmod` seguiria o link e mudaria o modo de um ficheiro que o
+  programa não criou.
 - **A escrita atómica deixou de seguir um link plantado no temporário.** O `<destino>.tmp`
   passa a ser criado com `O_EXCL` e `0600`: um symlink ou um hard link posto nesse caminho
   (derivado do destino, logo previsível) já não redirecciona a escrita — o nome é

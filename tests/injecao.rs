@@ -12,11 +12,13 @@
 //! validação no modelo (o ADR recusa-a por custo e por cobertura falsa: metade
 //! das entradas — as do import — não passa por `Todo::try_new`).
 //!
-//! Medido: com o `ratatui-core` 0.1.2 (versão presa no `Cargo.lock`) a defesa é
-//! dupla — o `set_stringn` filtra os caracteres de controlo **e** o
-//! `Cell::set_symbol` entra em pânico («control character passed to cell_width
-//! without filtering») se algum lá chegar. O alarme deste ficheiro é o que
-//! sobrevive se a primeira metade desaparecer.
+//! Medido com o `ratatui-core` 0.1.2 (versão presa no `Cargo.lock`): a defesa é
+//! **uma só** — o `Buffer::set_stringn` filtra os caracteres de controlo
+//! (`buffer.rs:351`) antes de a célula existir. O `Cell::set_symbol` **não**
+//! valida nada (só guarda o símbolo), e o `debug_assert!` do `cell_width.rs`
+//! («control character passed to cell_width without filtering») só dispara em
+//! `debug` e na medição da largura, não na escrita do símbolo. O alarme deste
+//! ficheiro é o que sobrevive se o filtro do `set_stringn` desaparecer.
 
 use std::fs;
 use std::path::PathBuf;
