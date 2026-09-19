@@ -85,6 +85,27 @@ pub enum Action {
     ThemeConfirm,
     /// `Esc` (ou `q`) na caixa de temas — repor o tema de entrada e fechar.
     ThemeCancel,
+    /// `C` em repouso — abrir a caixa de categorias (§C do `@designer`).
+    ///
+    /// Como a caixa de temas: uma sobreposição com **mapa próprio**, e abri-la
+    /// não atribui nada (não mexe no filtro, na ordem nem na seleção).
+    CategoryView,
+    /// `j`/`k`/`↓`/`↑` na caixa de categorias: mover o cursor (`+1`/`-1`). O
+    /// cursor para nos extremos, como o da caixa de temas.
+    CategoryMove(isize),
+    /// `Enter` na caixa de categorias — atribuir a categoria do cursor à tarefa
+    /// selecionada e fechar (em `sem categoria`, **tira** a atribuição).
+    CategoryAssign,
+    /// `a` na caixa — abrir a linha de texto «Nova categoria».
+    CategoryNew,
+    /// `e` na caixa — abrir a linha de texto «Renomear» com o nome actual.
+    CategoryRename,
+    /// `d` na caixa — armar a guarda da eliminação; a segunda pressão elimina
+    /// (segunda operação do programa sem undo por trás, ADR §5).
+    CategoryDelete,
+    /// `F` em repouso — ciclar o filtro por categoria (`todas → sem categoria →
+    /// … → todas`), um eixo próprio ao lado do `f` (ADR §8).
+    CycleCategoryFilter,
     /// Numa linha de texto: a tecla crua vai para o buffer.
     Input(KeyEvent),
     /// `Enter` — confirmar a linha de texto.
@@ -121,6 +142,13 @@ pub enum InputMode {
     /// `T` — caixa de temas sobreposta: só as teclas da caixa fazem algo
     /// (`j`/`k`/`↓`/`↑`, `Enter`, `Esc`, `q` e o `Ctrl+C` de todos os modos).
     Theme,
+    /// `C` — caixa de categorias sobreposta: mapa próprio, como a das temas.
+    /// Traz o `a`/`e`/`d` da caixa, que **não** são os da lista.
+    Category,
+    /// `a`/`e` com a caixa de categorias aberta — a linha de texto do nome
+    /// (criar ou renomear; qual dos dois é do `App`, como o `editing_description`
+    /// do `Editing`). Sai-se dela para a caixa, não para a lista.
+    CategoryName,
     /// `L` — vista do lixo: as teclas da lista não valem aqui.
     Trash,
 }
@@ -131,12 +159,22 @@ impl InputMode {
     pub const fn is_text(self) -> bool {
         matches!(
             self,
-            Self::Adding | Self::Editing | Self::Search | Self::Import | Self::Export
+            Self::Adding
+                | Self::Editing
+                | Self::Search
+                | Self::Import
+                | Self::Export
+                | Self::CategoryName
         )
     }
 
     /// Etiqueta da linha de entrada (o T6 pinta-a em `accent`; o frame
     /// `80x24-3-adicionar` mostra `Nova  ` seguido do buffer).
+    ///
+    /// Em [`InputMode::CategoryName`] a etiqueta da linha 22 é `Nova categoria`
+    /// **ou** `Renomear` (§C.4): qual dos dois só o `App` sabe (é o
+    /// [`super::app::App`] que sabe se o `e` está a renomear), logo o desenho lê
+    /// este valor como o de «nova» e pergunta ao `App` pelo resto.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -148,6 +186,8 @@ impl InputMode {
             Self::Export => "Exportar",
             Self::Help => "Ajuda",
             Self::Theme => "Tema",
+            Self::Category => "Categoria",
+            Self::CategoryName => "Nova categoria",
             Self::Trash => "Lixo",
         }
     }
@@ -160,7 +200,9 @@ impl InputMode {
             Self::Search => "Buscar…",
             Self::Import => "Caminho do ficheiro a importar…",
             Self::Export => "Caminho do ficheiro a exportar…",
-            Self::Normal | Self::Help | Self::Theme | Self::Trash => "",
+            // A linha 22 de criar/renomear uma categoria (`80x24-20-categorias-erro-vazio`).
+            Self::CategoryName => "Nome da categoria…",
+            Self::Normal | Self::Help | Self::Theme | Self::Category | Self::Trash => "",
         }
     }
 }
@@ -193,6 +235,7 @@ pub fn map_key(mode: &InputMode, key: KeyEvent) -> Action {
     match mode {
         InputMode::Help => map_help(key),
         InputMode::Theme => map_theme(key),
+        InputMode::Category => map_category(key),
         InputMode::Trash => map_trash(key),
         // `Normal` — e mais nada, porque os modos de texto saíram acima.
         _ => map_normal(key),
@@ -237,6 +280,12 @@ fn map_normal(key: KeyEvent) -> Action {
         // caixa de temas (§Decisão 9). As maiúsculas são distintas de propósito
         // neste mapa — a mesma regra que separa `g`/`G`.
         KeyCode::Char('T') => Action::ThemeView,
+        // `C` e `F` maiúsculos estão livres (§C.0 do `@designer`, medido: 29
+        // teclas ocupadas): a caixa de categorias e o eixo da categoria. O `f`
+        // minúsculo continua a governar **só** o estado — «pendentes de
+        // Trabalho» é o que se ganha por serem dois eixos (ADR §8).
+        KeyCode::Char('C') => Action::CategoryView,
+        KeyCode::Char('F') => Action::CycleCategoryFilter,
         KeyCode::Char('?') => Action::Help,
         // `Esc` em repouso limpa a busca e o filtro — **não** sai. Sair é só `q`
         // ou `Ctrl+C`: depois de um `d`, o reflexo de carregar em `Esc` não pode
@@ -268,6 +317,10 @@ fn map_trash(key: KeyEvent) -> Action {
         // no mapa do lixo: `u` significaria «restaurar o selecionado» e é assim
         // que se perde um item por engano. Sair daqui é `Esc` e depois `q`, ou
         // `Ctrl+C` — que o mapa acima trata em qualquer modo.
+        //
+        // `C` e `F` também não estão, e é deliberado (§C.2): a vista do lixo não
+        // mostra categorias (ADR §11), logo são teclas mortas aqui — o rodapé
+        // desta vista não as anuncia.
         _ => Action::Ignore,
     }
 }
@@ -293,6 +346,41 @@ fn map_theme(key: KeyEvent) -> Action {
         // senão o reflexo de fechar a caixa saía do programa a meio de uma
         // escolha. Para sair, `Ctrl+C` (ou `Esc` e depois `q`).
         KeyCode::Esc | KeyCode::Char('q') => Action::ThemeCancel,
+        _ => Action::Ignore,
+    }
+}
+
+/// Mapa da caixa de categorias (§C.2): a navegação da caixa, o `Enter` que
+/// atribui, o `a`/`e`/`d` que são **dela** (não os da lista) e o fecho sem
+/// atribuir.
+///
+/// É um mapa próprio, como o da ajuda e o das temas: com a caixa aberta, nada
+/// da lista vale lá dentro. É o que impede que o `d` que armou a eliminação de
+/// uma categoria mande a tarefa selecionada para o lixo por baixo da
+/// sobreposição — a lista está à vista atrás dela.
+///
+/// O `g`/`G` são o topo e o fim da caixa (a caixa tem janela de 10 entradas) e
+/// resolvem-se em [`Action::Home`]/[`Action::End`], que o `App` interpreta
+/// conforme o modo — como o `Restore` faz na lista e no lixo. Em `sem
+/// categoria` os dois são a mesma linha, logo não fazem nada.
+fn map_category(key: KeyEvent) -> Action {
+    if ctrl(key) {
+        // Só o `Ctrl+C` acima tem significado (a regra da ajuda, das temas e do lixo).
+        return Action::Ignore;
+    }
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Action::CategoryMove(1),
+        KeyCode::Char('k') | KeyCode::Up => Action::CategoryMove(-1),
+        KeyCode::Char('g') => Action::Home,
+        KeyCode::Char('G') => Action::End,
+        KeyCode::Enter => Action::CategoryAssign,
+        KeyCode::Char('a') => Action::CategoryNew,
+        KeyCode::Char('e') => Action::CategoryRename,
+        KeyCode::Char('d') => Action::CategoryDelete,
+        // `q` fecha sem atribuir, como o `Esc` — o `q` de sair da aplicação não
+        // vale aqui, senão o reflexo de fechar a caixa saía do programa a meio
+        // de uma escolha (a mesma decisão da caixa de temas).
+        KeyCode::Esc | KeyCode::Char('q') => Action::InputCancel,
         _ => Action::Ignore,
     }
 }
@@ -394,6 +482,8 @@ mod tests {
             InputMode::Export,
             InputMode::Help,
             InputMode::Theme,
+            InputMode::Category,
+            InputMode::CategoryName,
             InputMode::Trash,
         ] {
             assert_eq!(
@@ -425,6 +515,9 @@ mod tests {
             InputMode::Search,
             InputMode::Import,
             InputMode::Export,
+            // A linha do nome da categoria é texto como as outras cinco (§C.2):
+            // lá dentro, `q`, `j`, `d`, `C` e `F` são letras.
+            InputMode::CategoryName,
         ] {
             assert_eq!(acao(mode, press(KeyCode::Enter)), Action::InputConfirm, "{mode:?}");
             assert_eq!(acao(mode, press(KeyCode::Esc)), Action::InputCancel, "{mode:?}");
@@ -537,6 +630,117 @@ mod tests {
                 "«{c}» não vale com a caixa aberta"
             );
         }
+    }
+
+    /// §C.0: `C` e `F` estão livres (medido: 29 teclas ocupadas) e não roubam o
+    /// significado a nenhuma da tabela — o `f` minúsculo continua a governar o
+    /// estado e o `c` minúsculo continua a limpar as concluídas.
+    #[test]
+    fn c_e_f_nao_colidem_com_a_tabela_do_modo_normal() {
+        assert_eq!(atalho('C'), Action::CategoryView);
+        assert_eq!(atalho('F'), Action::CycleCategoryFilter);
+        assert_eq!(atalho('f'), Action::CycleFilter, "`f` é só o estado");
+        assert_eq!(atalho('c'), Action::ClearCompleted);
+
+        for c in ('a'..='z').chain('A'..='Z').chain('0'..='9') {
+            if c != 'C' {
+                assert_ne!(atalho(c), Action::CategoryView, "«{c}» não abre a caixa");
+            }
+            if c != 'F' {
+                assert_ne!(
+                    atalho(c),
+                    Action::CycleCategoryFilter,
+                    "«{c}» não cicla a categoria"
+                );
+            }
+        }
+        for code in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::Tab,
+            KeyCode::F(2),
+        ] {
+            assert_ne!(
+                acao(InputMode::Normal, press(code)),
+                Action::CategoryView,
+                "{code:?}"
+            );
+            assert_ne!(
+                acao(InputMode::Normal, press(code)),
+                Action::CycleCategoryFilter,
+                "{code:?}"
+            );
+        }
+    }
+
+    /// §C.2: a caixa de categorias tem mapa próprio — e o `a`/`e`/`d` de lá
+    /// dentro são os **dela** (a lista está à vista, por baixo).
+    #[test]
+    fn caixa_de_categorias_tem_mapa_proprio() {
+        let esperado = [
+            (KeyCode::Char('j'), Action::CategoryMove(1)),
+            (KeyCode::Down, Action::CategoryMove(1)),
+            (KeyCode::Char('k'), Action::CategoryMove(-1)),
+            (KeyCode::Up, Action::CategoryMove(-1)),
+            (KeyCode::Char('g'), Action::Home),
+            (KeyCode::Char('G'), Action::End),
+            (KeyCode::Enter, Action::CategoryAssign),
+            (KeyCode::Char('a'), Action::CategoryNew),
+            (KeyCode::Char('e'), Action::CategoryRename),
+            (KeyCode::Char('d'), Action::CategoryDelete),
+            (KeyCode::Esc, Action::InputCancel),
+            (KeyCode::Char('q'), Action::InputCancel),
+        ];
+        for (code, esperada) in esperado {
+            assert_eq!(acao(InputMode::Category, press(code)), esperada, "{code:?}");
+        }
+        // Nada da lista atravessa a caixa — `s`, `f`, `1`/`2`/`3` e `d`
+        // sobretudo: um `d` que ali dentro eliminasse a categoria e cá fora
+        // mandasse a tarefa ao lixo era o defeito clássico das sobreposições.
+        for c in [
+            's', 'f', '1', '2', '3', 't', 'c', 'u', 'i', 'x', 'L', 'T', 'C', 'F', '?', '/', 'z',
+        ] {
+            assert_eq!(
+                acao(InputMode::Category, press(KeyCode::Char(c))),
+                Action::Ignore,
+                "«{c}» não vale com a caixa de categorias aberta"
+            );
+        }
+    }
+
+    /// §C.2: a vista do lixo não tem categorias — `C` e `F` são teclas mortas lá
+    /// dentro (o rodapé da vista não as anuncia).
+    #[test]
+    fn as_teclas_das_categorias_sao_mortas_no_lixo() {
+        assert_eq!(
+            acao(InputMode::Trash, press(KeyCode::Char('C'))),
+            Action::Ignore
+        );
+        assert_eq!(
+            acao(InputMode::Trash, press(KeyCode::Char('F'))),
+            Action::Ignore
+        );
+    }
+
+    /// A linha do nome é um modo de texto (as teclas cruas vão para o buffer) e
+    /// a caixa é navegação: a etiqueta e o marcador da linha 22 são os de §C.4.
+    #[test]
+    fn o_nome_da_categoria_e_texto_e_a_caixa_nao() {
+        assert!(InputMode::CategoryName.is_text());
+        assert!(!InputMode::Category.is_text(), "a caixa é navegação");
+        assert_eq!(InputMode::CategoryName.label(), "Nova categoria");
+        assert_eq!(InputMode::CategoryName.placeholder(), "Nome da categoria…");
+        assert_eq!(
+            InputMode::Category.placeholder(),
+            "",
+            "a caixa não tem linha 22"
+        );
     }
 
     #[test]

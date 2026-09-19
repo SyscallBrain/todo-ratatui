@@ -1076,7 +1076,11 @@ fn idade(data: NaiveDate, referencia: NaiveDate) -> String {
 
 /// Trunca a `largura` colunas, com `…` final quando corta — por caracteres, não
 /// por bytes (§2), e medindo em colunas.
-fn cortar(texto: &str, largura: usize) -> String {
+///
+/// `pub(crate)` porque o `App` também corta: as mensagens de acção que levam um
+/// nome de categoria (§C.4) cortam **o nome** e nunca a contagem, e é esta a
+/// função que mede em colunas (um nome com acentos não se corta por bytes).
+pub(crate) fn cortar(texto: &str, largura: usize) -> String {
     if texto.width() <= largura {
         return texto.to_owned();
     }
