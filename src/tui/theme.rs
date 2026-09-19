@@ -17,8 +17,10 @@
 //!   recalculados por `tests/temas.rs` a partir destes valores: trazer um hex
 //!   que reprove os limiares falha o teste, em vez de sair no ecrã.
 //! * **O que sai no terminal.** O `classico` tem de continuar a emitir as
-//!   sequências da v1.0.1 (`38;5;9`, `38;5;14`, …); também é teste
-//!   (`tests/temas.rs`), porque é uma equivalência que ninguém vê a olho.
+//!   sequências da v1.0.1 (`38;5;6`, `38;5;1`, `38;5;2`, `38;5;8`); também é
+//!   teste (`tests/temas.rs`), porque é uma equivalência que ninguém vê a olho.
+//!   Os índices são os que o binário da v1.0.1 escrevia, medidos — não os que o
+//!   nome da cor sugere (ver [`classico`]).
 //!
 //! O rebaixamento de cor é decisão nossa ([`ModoCor`]): o `ratatui`/`crossterm`
 //! escrevem sempre `38;2;r;g;b`, independentemente do que o terminal suporta.
@@ -119,11 +121,22 @@ const fn tokyo_night(
 
 /// O que a v1.0.1 desenha hoje, reproduzido byte a byte (§T.4).
 ///
-/// Os índices são **explícitos** e não as cores nomeadas (`Color::Red` →
-/// `38;5;9`) porque as nomeadas são um nome para uma intenção, e um índice é o
-/// que sai: `Color::Cyan` já emite `38;5;14` hoje, e escrevê-lo assim torna a
-/// paleta reproduzível e mensurável. Sem `bg` e sem `fg` — o `classico` não
-/// pinta nada, é o único que respeita o terminal.
+/// Os índices são **explícitos** e não as cores nomeadas (`Color::Cyan`) porque
+/// as nomeadas são um nome para uma intenção, e um índice é o que sai: é o que
+/// torna a paleta reproduzível e mensurável.
+///
+/// E a correspondência **não** é a que o nome sugere. `IntoCrossterm<CrosstermColor>
+/// for Color` (`ratatui-crossterm-0.1.2/src/lib.rs:410-424`) manda `Red` →
+/// `DarkRed`, `Green` → `DarkGreen` e `Cyan` → `DarkCyan`; é o `Display` do
+/// `Colored` do crossterm (`crossterm-0.29.0/src/style/types/colored.rs:131-146`)
+/// que escreve esses nomes como `38;5;1`, `38;5;2` e `38;5;6` — e não
+/// `38;5;9`/`38;5;10`/`38;5;14`, que são os índices *bright* que a v1.1 usou
+/// primeiro por ler o nome em vez da conversão. Os literais de `tests/temas.rs`
+/// são a captura real do binário da v1.0.1 em `tmux` 80×24, não uma segunda
+/// leitura destas constantes.
+///
+/// Sem `bg` e sem `fg` — o `classico` não pinta nada, é o único que respeita o
+/// terminal.
 const fn classico() -> Theme {
     Theme {
         slug: SLUG_CLASSICO,
@@ -131,13 +144,13 @@ const fn classico() -> Theme {
         bg: None,
         fg: Style::new(),
         accent: Style::new()
-            .fg(Color::Indexed(14))
+            .fg(Color::Indexed(6))
             .add_modifier(Modifier::BOLD),
-        high: Style::new().fg(Color::Indexed(9)),
-        done: Style::new().fg(Color::Indexed(10)),
+        high: Style::new().fg(Color::Indexed(1)),
+        done: Style::new().fg(Color::Indexed(2)),
         rule: Style::new().fg(Color::Indexed(8)),
         err: Style::new()
-            .fg(Color::Indexed(9))
+            .fg(Color::Indexed(1))
             .add_modifier(Modifier::BOLD),
         selec: Style::new().add_modifier(Modifier::REVERSED),
         placeholder: Style::new().add_modifier(Modifier::ITALIC),

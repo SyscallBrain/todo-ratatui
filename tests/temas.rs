@@ -11,9 +11,11 @@
 //!    fixa os hex um a um, para o contraste não ser a única barreira.
 //! 2. **Que o `classico` continua a ser a v1.0.1.** A extracção da paleta para
 //!    um módulo não pode mudar um byte do que sai no terminal: as sequências
-//!    são comparadas com as que a v1.0.1 emite (`38;5;9`, `38;5;14`, …), via
-//!    `Display` do `Colored` — o mesmo caminho que o crossterm usa para
-//!    escrever.
+//!    são comparadas com as que a v1.0.1 emite (`38;5;6`, `38;5;1`, `38;5;2`,
+//!    `38;5;8`), via `Display` do `Colored` — o mesmo caminho que o crossterm
+//!    usa para escrever. Os literais são uma **captura do binário da v1.0.1**
+//!    em `tmux` 80×24, e não uma segunda leitura de `src/tui/theme.rs`: é essa
+//!    diferença que prende a equivalência ([`classico_emite_as_sequencias_da_v1`]).
 //! 3. **Que o rebaixamento não existe.** Em modo `ansi` um tema com fundo
 //!    resolve para o `classico`; não há RGB reduzido a aproximações.
 
@@ -41,18 +43,18 @@ const FUNDO_DE_REFERENCIA: u32 = 0x1a1b26;
 const FG_DO_TERMINAL: u32 = 0xa9b1d6;
 
 /// A paleta ANSI da alacritty do Tiago **nos índices que o `classico` usa**
-/// (§T.2 e §T.4), a mesma que `audits/temas-contraste.py` mediu: 8 = a régua,
-/// 9 = o `high`/`err`, 10 = o `done`, 14 = o `accent`.
+/// (§T.2 e §T.4), a mesma que `audits/temas-contraste.py` mediu: 1 = o
+/// `high`/`err`, 2 = o `done`, 6 = o `accent`, 8 = a régua.
 ///
 /// Um índice não é uma cor: é um nome que o terminal resolve. Esta tabela é a
 /// resolução **daquela** alacritty — noutro terminal os mesmos índices podem
 /// medir outro rácio, e é esse o preço (declarado em §T.3) de o `classico` não
 /// pintar nada. Os três Tokyo Night não passam por aqui: declaram RGB.
 const PALETA_ANSI: [(u8, u32); 4] = [
+    (1, 0xff5555),
+    (2, 0x50fa7b),
+    (6, 0x8be9fd),
     (8, 0x6272a4),
-    (9, 0xff6e6e),
-    (10, 0x69ff94),
-    (14, 0xa4ffff),
 ];
 
 fn canais(hex: u32) -> (u8, u8, u8) {
@@ -285,15 +287,19 @@ fn paleta_e_a_da_secao_t2() {
     }
 
     // O `classico` declara índices, não RGB — é o que faz a paleta ficar
-    // reproduzível (§T.4) —, não pinta fundo e não força `fg`.
+    // reproduzível (§T.4) —, não pinta fundo e não força `fg`. Os índices são os
+    // medidos no binário da v1.0.1 (`38;5;6`/`38;5;1`/`38;5;2`/`38;5;8`), não os
+    // que o nome das cores da v1.0.1 sugere: quem reescrever isto a partir do
+    // `theme.rs` (ou de `Color::Red` → `38;5;9`) falha o
+    // `classico_emite_as_sequencias_da_v1` abaixo.
     let classico = Theme::por_slug(SLUG_CLASSICO).expect("tema do catálogo");
     assert_eq!(classico.bg, None);
     assert_eq!(classico.fg, Style::new());
-    assert_eq!(classico.accent.fg, Some(Color::Indexed(14)));
-    assert_eq!(classico.high.fg, Some(Color::Indexed(9)));
-    assert_eq!(classico.done.fg, Some(Color::Indexed(10)));
+    assert_eq!(classico.accent.fg, Some(Color::Indexed(6)));
+    assert_eq!(classico.high.fg, Some(Color::Indexed(1)));
+    assert_eq!(classico.done.fg, Some(Color::Indexed(2)));
     assert_eq!(classico.rule.fg, Some(Color::Indexed(8)));
-    assert_eq!(classico.err.fg, Some(Color::Indexed(9)));
+    assert_eq!(classico.err.fg, Some(Color::Indexed(1)));
     assert_eq!(classico.err.add_modifier, Modifier::BOLD);
     assert_eq!(classico.placeholder, Style::new().add_modifier(Modifier::ITALIC));
     assert_eq!(classico.riscado, Style::new().add_modifier(Modifier::CROSSED_OUT));
@@ -314,14 +320,36 @@ fn paleta_e_a_da_secao_t2() {
 /// O `classico` emite as **mesmas sequências** que a v1.0.1 emitia.
 ///
 /// A v1.0.1 escrevia `Color::Red`/`Color::Green`/`Color::Cyan`/`AnsiValue(8)`;
-/// o `classico` escreve `Indexed(9)`/`Indexed(10)`/`Indexed(14)`/`Indexed(8)`.
+/// o `classico` escreve `Indexed(1)`/`Indexed(2)`/`Indexed(6)`/`Indexed(8)`.
 /// São o mesmo byte no terminal — e é o que este teste compara, passando pelo
 /// mesmo `Display` que o backend usa para escrever.
+///
+/// **Os literais não se derivam do tema.** São a captura real do binário da tag
+/// `v1.0.1` (worktree em `~/.cache/review/v1.0.1` sobre `5a4667a`, o mesmo
+/// `db.json`, `tmux` 80×24), papel a papel:
+///
+/// | papel  | nome na v1.0.1  | sequência medida | o que a v1.1 declara |
+/// | ------ | --------------- | ---------------- | -------------------- |
+/// | accent | `Color::Cyan`   | `38;5;6`         | `Indexed(6)`         |
+/// | high   | `Color::Red`    | `38;5;1`         | `Indexed(1)`         |
+/// | done   | `Color::Green`  | `38;5;2`         | `Indexed(2)`         |
+/// | rule   | `AnsiValue(8)`  | `38;5;8`         | `Indexed(8)`         |
+/// | err    | `Color::Red`    | `38;5;1` + bold  | `Indexed(1)` + bold  |
+///
+/// A conversão do `ratatui` para o `crossterm`
+/// (`ratatui-crossterm-0.1.2/src/lib.rs:410-424`: `Red`→`DarkRed`,
+/// `Green`→`DarkGreen`, `Cyan`→`DarkCyan`) é o que faz `Color::Red` sair como
+/// `38;5;1` e não `38;5;9`. A v1.1 começou com os índices *bright* por ler o
+/// nome em vez da conversão, e este teste não os apanhou precisamente por
+/// re-derivar o esperado do próprio tema: comparar `Indexed(14)` com o literal
+/// `"38;5;14"` é uma tautologia — passa com o valor certo e com o errado. Daqui
+/// para a frente o valor certo é o da tabela acima: repor `Indexed(14)` (ou
+/// `(9)`, ou `(10)`) no tema tem de fazer este teste falhar.
 #[test]
 fn classico_emite_as_sequencias_da_v1() {
     // A cor tem de ser forçada: com `NO_COLOR` definido no ambiente, o
     // `Display` do `Colored` escreve **nada** e o teste comparava `""` com
-    // `38;5;9` — falhava por causa do ambiente e não do tema (verificado:
+    // `38;5;6` — falhava por causa do ambiente e não do tema (verificado:
     // trocar este `true` por `false` e correr com `NO_COLOR=1` dá
     // `left: ""`). O crossterm lê a variável uma só vez (memoiza no primeiro
     // acesso), logo forçar aqui vale para o resto deste processo de teste.
@@ -329,11 +357,11 @@ fn classico_emite_as_sequencias_da_v1() {
 
     let classico = Theme::por_slug(SLUG_CLASSICO).expect("tema do catálogo");
     let papeis = [
-        ("accent", classico.accent, "38;5;14"),
-        ("high", classico.high, "38;5;9"),
-        ("done", classico.done, "38;5;10"),
+        ("accent", classico.accent, "38;5;6"),
+        ("high", classico.high, "38;5;1"),
+        ("done", classico.done, "38;5;2"),
         ("rule", classico.rule, "38;5;8"),
-        ("err", classico.err, "38;5;9"),
+        ("err", classico.err, "38;5;1"),
     ];
     for (nome, estilo, esperado) in papeis {
         let cor = estilo
