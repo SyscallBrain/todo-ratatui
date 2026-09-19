@@ -1060,7 +1060,9 @@ impl App {
                 if caminho.is_empty() {
                     return;
                 }
-                match export_csv_to_path(self.store.todos(), Path::new(&caminho)) {
+                // A `Db` inteira e não só as tarefas: o nome da categoria vive
+                // nas categorias (T3).
+                match export_csv_to_path(self.store.db(), Path::new(&caminho)) {
                     Ok(n) => {
                         self.status =
                             Status::message(format!("Exportadas {n} tarefas para {caminho}"));
