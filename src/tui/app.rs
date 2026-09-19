@@ -15,12 +15,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::core::{
-    Counts, Filter, OpsError, Priority, SortKey, Store, Todo, TodoId, export_csv_to_path,
+    Config, Counts, Filter, OpsError, Priority, SortKey, Store, Todo, TodoId, export_csv_to_path,
     import_from_path,
 };
 
 use super::event::{Action, InputMode, map_key};
-use super::theme::Theme;
+use super::theme::{CATALOGO, Theme};
 
 /// Janela da guarda do `c` no lixo: a segunda pressão tem de vir dentro deste
 /// tempo, e qualquer outra acção desarma (§5, mudança 7).
@@ -60,6 +60,18 @@ fn next_filter(filter: Filter) -> Filter {
         // reintroduzir no `tui` exactamente a decisão que o T3b desfaz.
         _ => Filter::Active,
     }
+}
+
+/// Índice do tema no [`CATALOGO`] — a posição do cursor da caixa de temas.
+///
+/// Um tema que não esteja no catálogo (hoje impossível, mas o [`Theme`] é
+/// `pub`) não pode pôr o cursor fora dos limites: cai em `0`, o primeiro da
+/// lista, e o `Enter` a partir daí grava o que está debaixo do cursor.
+fn posicao_no_catalogo(tema: &Theme) -> usize {
+    CATALOGO
+        .iter()
+        .position(|candidato| candidato.slug == tema.slug)
+        .unwrap_or(0)
 }
 
 /// O que a linha 22 mostra (§4). A precedência — erro > mensagem > descrição do
@@ -152,15 +164,23 @@ pub struct App {
     ///
     /// `None` quando não há caminho conhecido — o `App` dos testes, ou um
     /// sistema sem `XDG_CONFIG_HOME` nem `HOME`: aí o tema escolhe-se na mesma
-    /// nesta sessão e o `T5` diz que não há onde gravar, em vez de inventar um
-    /// caminho no `~/.config` real.
+    /// nesta sessão e o `Enter` da caixa fecha **sem** tentar gravar, em vez de
+    /// inventar um caminho no `~/.config` real.
     pub config_path: Option<PathBuf>,
+    /// Cursor da caixa de temas (`T`): índice na [`CATALOGO`].
+    ///
+    /// Estado de navegação — e `pub` porque o desenho o lê (a caixa marca a
+    /// linha do cursor e o tema em uso).
+    pub theme_cursor: usize,
+    /// Tema que estava aplicado quando a caixa abriu: é o que o `Esc` repõe
+    /// (§Decisão 9). Por referência, como o `theme` — o catálogo é `const`.
+    theme_entrada: &'static Theme,
     buffer: Vec<char>,
     cursor: usize,
     /// Em `Editing`: o `Enter` grava a descrição em vez do título.
     editing_description: bool,
-    /// Modo para onde voltar quando a ajuda fechar (a ajuda sobrepõe-se à
-    /// vista, e é a única sobreposição que não se fecha sozinha).
+    /// Modo para onde voltar quando a sobreposição fechar — a ajuda e a caixa de
+    /// temas abrem-se por cima da vista e guardam aqui de onde vieram.
     return_mode: InputMode,
     /// Fim da janela da guarda do `c` no lixo.
     armed_until: Option<Instant>,
@@ -186,21 +206,23 @@ impl App {
     ///
     /// O [`App`] guarda os dois porque a caixa de temas do T5 precisa deles
     /// para gravar — e só ela grava: nem `--theme` nem a variável de ambiente
-    /// escrevem no ficheiro (ADR §Decisão 2).
+    /// escrevem no ficheiro (ADR §Decisão 2). O cursor da caixa abre na posição
+    /// do tema **aplicado**, e não na primeira do catálogo: é o que faz o
+    /// `Enter` sem navegar não mudar nada.
     #[must_use]
     pub fn com_tema(store: Store, theme: &'static Theme, config_path: Option<PathBuf>) -> Self {
         let mut app = Self {
             store,
+            theme,
+            config_path,
+            theme_cursor: posicao_no_catalogo(theme),
+            theme_entrada: theme,
             list_state: ListState::default(),
             mode: InputMode::Normal,
             status: Status::Idle,
             filter: Filter::default(),
             query: String::new(),
             sort: SortKey::Priority,
-            // O tema por omissão é o primeiro do catálogo (Tokyo Night): quem
-            // arranca sem escolher vê o mesmo que `Theme::default()` diz.
-            theme,
-            config_path,
             buffer: Vec::new(),
             cursor: 0,
             editing_description: false,
@@ -409,6 +431,10 @@ impl App {
                 };
                 self.return_mode = InputMode::Normal;
             }
+            Action::ThemeView => self.abrir_caixa_de_temas(),
+            Action::ThemeMove(delta) => self.mover_na_caixa_de_temas(delta),
+            Action::ThemeConfirm => self.confirmar_tema(),
+            Action::ThemeCancel => self.cancelar_tema(),
             Action::SetPriority(priority) => self.set_priority(priority),
             // `Input`/`InputConfirm` só existem em modos de texto (tratados
             // acima) e `Ignore` é a ausência de acção.
@@ -747,6 +773,96 @@ impl App {
         } else {
             self.status = Status::Idle;
         }
+    }
+
+    // ------------------------------------------------ caixa de temas (§Decisão 9)
+
+    /// `T` — abre a caixa no tema que está aplicado.
+    ///
+    /// O cursor abre na posição do tema em uso (e não na primeira do catálogo):
+    /// a caixa mostra onde se está, e o `Enter` sem navegar não muda nada. O
+    /// modo de onde a caixa abriu fica guardado para ela saber onde voltar, como
+    /// na ajuda.
+    fn abrir_caixa_de_temas(&mut self) {
+        self.theme_entrada = self.theme;
+        self.theme_cursor = posicao_no_catalogo(self.theme);
+        self.return_mode = self.mode;
+        self.mode = InputMode::Theme;
+    }
+
+    /// `j`/`k`/`↓`/`↑` na caixa: move o cursor e aplica logo o tema candidato.
+    ///
+    /// A pré-visualização é o próprio [`App::theme`] a apontar para o candidato
+    /// — não há cópia da paleta nem um segundo estado de cor. O cursor não dá a
+    /// volta: para na primeira e na última posição, como a seleção da lista.
+    /// Nada aqui toca no disco: gravar é só o `Enter`.
+    fn mover_na_caixa_de_temas(&mut self, delta: isize) {
+        if !matches!(self.mode, InputMode::Theme) {
+            return;
+        }
+        let ultimo = CATALOGO.len() as isize - 1;
+        let novo = (self.theme_cursor as isize + delta).clamp(0, ultimo) as usize;
+        self.theme_cursor = novo;
+        self.theme = &CATALOGO[novo];
+    }
+
+    /// `Enter` — grava a preferência e fecha.
+    ///
+    /// Sem caminho de config conhecido (o [`App`] dos testes, ou um sistema sem
+    /// `XDG_CONFIG_HOME` nem `HOME`) fecha com o tema aplicado **sem** tentar
+    /// gravar: não se inventa um caminho no `~/.config` real.
+    ///
+    /// Falhar a gravar não é fatal (ADR §Decisão 8): o tema fica nesta sessão, a
+    /// linha 22 diz **onde** não se gravou, a lista não é tocada e não há
+    /// `panic!`. É a mesma política da falha a gravar o `db.json`.
+    fn confirmar_tema(&mut self) {
+        if !matches!(self.mode, InputMode::Theme) {
+            return;
+        }
+        let escolhido = CATALOGO[self.theme_cursor];
+        self.theme = &CATALOGO[self.theme_cursor];
+        self.fechar_caixa_de_temas();
+
+        let Some(caminho) = self.config_path.clone() else {
+            // Sem ficheiro não há o que gravar nem o que dizer: a escolha vale
+            // nesta sessão e o próximo arranque volta ao que o arranque decidir.
+            return;
+        };
+        let preferencia = Config {
+            theme: Some(escolhido.slug.to_owned()),
+        };
+        match preferencia.save(&caminho) {
+            Ok(()) => self.status = Status::message(format!("Tema «{}» gravado", escolhido.nome)),
+            Err(_) => {
+                self.status = Status::error(format!(
+                    "Erro: não gravou {} — tema aplicado só nesta sessão",
+                    caminho.display()
+                ));
+            }
+        }
+    }
+
+    /// `Esc`/`q` — fecha e repõe **exactamente** o tema de entrada.
+    ///
+    /// É a outra metade da §Decisão 9: o que se viu a navegar não fica, e o
+    /// ficheiro não é tocado porque nada foi gravado. `q` faz o mesmo que o
+    /// `Esc` — «fechar sem gravar» não pode deixar uma pré-visualização aplicada
+    /// que ninguém pediu para guardar. (`Ctrl+C` sai da aplicação, como em todos
+    /// os modos.)
+    fn cancelar_tema(&mut self) {
+        if !matches!(self.mode, InputMode::Theme) {
+            return;
+        }
+        self.theme = self.theme_entrada;
+        self.fechar_caixa_de_temas();
+    }
+
+    /// Fecha a caixa e volta ao modo de onde ela abriu (`T` só existe na lista,
+    /// mas a volta fica pelo mesmo caminho da ajuda).
+    fn fechar_caixa_de_temas(&mut self) {
+        self.mode = self.return_mode;
+        self.return_mode = InputMode::Normal;
+        self.theme_cursor = posicao_no_catalogo(self.theme);
     }
 
     // -------------------------------------------------------- linha de texto

@@ -33,7 +33,7 @@ use crate::core::{Priority, TRASH_LIMIT, Todo, Trashed};
 
 use super::app::{App, Status, UNDO_HINT};
 use super::event::InputMode;
-use super::theme::Theme;
+use super::theme::{CATALOGO, Theme};
 
 // ------------------------------------------------------------------- cor (§1)
 
@@ -222,6 +222,10 @@ pub fn ui(frame: &mut Frame, app: &App) {
 
     if matches!(app.mode, InputMode::Help) {
         desenha_ajuda(frame, app, area);
+    }
+
+    if matches!(app.mode, InputMode::Theme) {
+        desenha_temas(frame, app, area);
     }
 }
 
@@ -757,6 +761,90 @@ fn escreve(celulas: &mut [(char, Style)], coluna: usize, texto: &str, estilo: St
             *celula = (caracter, estilo);
         }
     }
+}
+
+// ------------------------------------------------------------ temas (§Decisão 9)
+
+/// Caixa de temas sobreposta.
+///
+/// **Provisória, de propósito:** o desenho da caixa — título, marca do cursor,
+/// linha do tema em uso, amostra com o fundo do tema e a linha do modo de cor —
+/// é do cartão T6, contra o frame `80x24-14-temas.txt` do `@designer`. Aqui fica
+/// só o mínimo para a caixa existir no ecrã e para se ver o tema que está debaixo
+/// do cursor: o rectângulo é o mesmo da ajuda ([`CAIXA_AJUDA`]) e as molduras
+/// são feitas com as mesmas células, para as duas sobreposições não divergirem
+/// de medida.
+fn desenha_temas(frame: &mut Frame, app: &App, area: Rect) {
+    let largura = CAIXA_AJUDA.0.min(area.width);
+    let altura = CAIXA_AJUDA.1.min(area.height);
+    let caixa = Rect::new(
+        area.x + (area.width - largura) / 2,
+        area.y + (area.height - altura) / 2,
+        largura,
+        altura,
+    );
+    frame.render_widget(Clear, caixa);
+    // Como na ajuda: o `Clear` repõe as células a `Reset` e leva o fundo do tema
+    // com ele — repinta-se a caixa logo a seguir.
+    pinta_o_fundo(frame, app, caixa);
+    frame.render_widget(
+        Paragraph::new(linhas_dos_temas(app, largura, altura)),
+        caixa,
+    );
+}
+
+fn linhas_dos_temas(app: &App, largura: u16, altura: u16) -> Vec<Line<'static>> {
+    let colunas = usize::from(largura);
+    let mut linhas = Vec::with_capacity(usize::from(altura));
+
+    let mut topo = vec![
+        ('╭', app.theme.rule),
+        ('─', app.theme.rule),
+        ('─', app.theme.rule),
+    ];
+    topo.extend(" tema ".chars().map(|c| (c, app.theme.accent)));
+    while topo.len() < colunas.saturating_sub(1) {
+        topo.push(('─', app.theme.rule));
+    }
+    topo.push(('╮', app.theme.rule));
+    topo.truncate(colunas);
+    linhas.push(celulas_para_linha(topo));
+
+    for indice in 0..usize::from(altura).saturating_sub(2) {
+        let mut celulas = vec![('│', app.theme.rule)];
+        celulas.extend(std::iter::repeat_n(
+            (' ', app.theme.fg),
+            colunas.saturating_sub(2),
+        ));
+        celulas.push(('│', app.theme.rule));
+        celulas.truncate(colunas);
+        if let Some(tema) = CATALOGO.get(indice) {
+            let debaixo_do_cursor = indice == app.theme_cursor;
+            let prefixo = if debaixo_do_cursor { "▶ " } else { "  " };
+            let estilo = if debaixo_do_cursor {
+                app.theme.accent
+            } else {
+                app.theme.fg
+            };
+            escreve(&mut celulas, 2, &format!("{prefixo}{}", tema.nome), estilo);
+        }
+        linhas.push(celulas_para_linha(celulas));
+    }
+
+    let mut base = vec![('╰', app.theme.rule)];
+    base.extend(
+        "─ j / k  escolher · Enter  gravar · Esc  voltar "
+            .chars()
+            .map(|c| (c, app.theme.fg)),
+    );
+    while base.len() < colunas.saturating_sub(1) {
+        base.push(('─', app.theme.rule));
+    }
+    base.push(('╯', app.theme.rule));
+    base.truncate(colunas);
+    linhas.push(celulas_para_linha(base));
+
+    linhas
 }
 
 /// Converte células (carácter + estilo) numa linha, juntando vizinhas iguais —
