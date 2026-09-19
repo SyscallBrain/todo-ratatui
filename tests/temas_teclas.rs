@@ -8,16 +8,23 @@
 //! real do utilizador, e o teste «sem caminho de config» prova-o byte a byte.
 //!
 //! O que este ficheiro **não** prova: o desenho da caixa (é o cartão T6, contra
-//! o frame `80x24-14-temas.txt`). Aqui fica o estado e as teclas.
+//! o frame `80x24-14-temas.txt`). Aqui fica o estado e as teclas — com uma
+//! excepção, a do `ansi`: desenhar o ecrã num `TestBackend` é a única maneira de
+//! afirmar que a caixa não escreve RGB num terminal de 16 cores (ADR §Adenda
+//! A1.4), porque as sequências não se lêem do estado do `App`.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::style::Color;
 
 use todo_ratatui::core::{Config, Filter, Store};
 use todo_ratatui::tui::theme::{CATALOGO, SLUG_CLASSICO};
+use todo_ratatui::tui::ui::ui;
 use todo_ratatui::tui::{Action, App, InputMode, ModoCor, Theme, map_key};
 
 // ------------------------------------------------------------------- fixture
@@ -475,5 +482,141 @@ fn com_a_caixa_aberta_nenhuma_tecla_da_lista_faz_nada() {
     assert!(
         !base.config.exists(),
         "sair com a caixa aberta não grava nada"
+    );
+}
+
+// ------------------------------------------- A1.4: em `ansi` a caixa não pinta RGB
+
+/// As cores RGB que o ecrã desenhado escreve — a sonda dos testes do `ansi`.
+///
+/// Num terminal de 16 cores o `ratatui`/`crossterm` **não** rebaixam nada: um
+/// único `Color::Rgb` numa célula é uma sequência `38;2;…`/`48;2;…` a sair no
+/// ecrã. A sonda lê o `Buffer` do desenho — o mesmo que o backend do terminal
+/// escreve — e devolve as cores distintas que lá encontrou.
+fn rgb_no_ecra(app: &App) -> Vec<Color> {
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal de teste");
+    terminal.draw(|frame| ui(frame, app)).expect("desenhar o ecrã");
+    let buffer = terminal.backend().buffer();
+
+    let mut cores = Vec::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let estilo = buffer.cell((x, y)).expect("célula dentro do ecrã").style();
+            for cor in [estilo.fg, estilo.bg].into_iter().flatten() {
+                if matches!(cor, Color::Rgb(..)) && !cores.contains(&cor) {
+                    cores.push(cor);
+                }
+            }
+        }
+    }
+    cores
+}
+
+/// A1.4: em `ansi` a caixa **não** escreve RGB — nem a navegar, nem depois de
+/// fechar — e o `Enter` grava a **escolha**, não o tema que se viu.
+///
+/// Medido pelo `@architect` no binário do hash revisto: o [`ModoCor::resolver`]
+/// só era aplicado no arranque e a caixa escrevia `&CATALOGO[cursor]` em bruto
+/// — com `T` e `k` (cursor em Tokyo Night Moon) o ecrã passava a ter 8×
+/// `48;2;34;36;54` e 39 sequências `38;2;…` num terminal de 16 cores, com a
+/// própria caixa a anunciar «modo de cor: ansi». As três partes do contrato:
+/// o que se desenha é o tema resolvido, o cursor continua a marcar a escolha, e
+/// a escolha é o que fica no `config.json`.
+#[test]
+fn em_ansi_a_caixa_nao_escreve_rgb_nem_a_navegar_nem_depois_de_fechar() {
+    let base = base("ansi-sem-rgb");
+    escreve_preferencia(&base, "tokyo-night");
+    let store = Store::open(&base.db).expect("abrir a base de dados");
+    let pedido = Theme::por_slug("tokyo-night").expect("slug do catálogo");
+
+    // Como o arranque a sério: o `App` recebe o tema **já resolvido** pelo modo.
+    let mut app = App::com_tema(
+        store,
+        ModoCor::Ansi.resolver(pedido),
+        Some(base.config.clone()),
+        ModoCor::Ansi,
+    );
+    assert_eq!(app.modo_cor, ModoCor::Ansi, "o modo fica em vigor");
+    assert_eq!(
+        app.theme.slug, SLUG_CLASSICO,
+        "em `ansi` o tema com fundo abre como o `classico`"
+    );
+    assert!(
+        rgb_no_ecra(&app).is_empty(),
+        "a lista em `ansi` não escreve RGB: {:?}",
+        rgb_no_ecra(&app)
+    );
+
+    tecla(&mut app, 'T');
+    assert_eq!(app.theme_cursor, 3, "o cursor abre no tema em uso");
+
+    tecla(&mut app, 'k');
+    assert_eq!(app.theme_cursor, 2, "a escolha passa a ser o Tokyo Night Moon");
+    assert_eq!(
+        app.theme.slug, SLUG_CLASSICO,
+        "e o que se desenha é o tema resolvido"
+    );
+    let a_navegar = rgb_no_ecra(&app);
+    assert!(
+        a_navegar.is_empty(),
+        "a navegar na caixa não sai um único RGB: {a_navegar:?}"
+    );
+
+    entra(&mut app);
+
+    assert_eq!(app.mode, InputMode::Normal, "o `Enter` fecha a caixa");
+    assert_eq!(
+        app.theme.slug, SLUG_CLASSICO,
+        "e o tema aplicado continua a ser o resolvido"
+    );
+    let depois_de_fechar = rgb_no_ecra(&app);
+    assert!(
+        depois_de_fechar.is_empty(),
+        "depois de fechar também não sai RGB: {depois_de_fechar:?}"
+    );
+    assert_eq!(
+        preferencia(&base).as_deref(),
+        Some("tokyo-night-moon"),
+        "gravou a escolha do cursor, não o `classico` que se viu"
+    );
+    assert!(
+        !app.status.is_error(),
+        "gravar não é erro: {:?}",
+        app.status
+    );
+}
+
+/// O contraponto do teste acima: em `rgb` a mesma caixa, no mesmo sítio,
+/// **escreve** RGB.
+///
+/// Sem isto, o teste do `ansi` passaria também se o ecrã deixasse de ter cor
+/// nenhuma — a sonda tem de se ver a si própria a encontrar o `48;2;34;36;54`
+/// que o `@architect` mediu em `Tokyo Night Moon`.
+#[test]
+fn em_rgb_a_caixa_escreve_rgb() {
+    let base = base("rgb-com-rgb");
+    escreve_preferencia(&base, "tokyo-night");
+    let store = Store::open(&base.db).expect("abrir a base de dados");
+    let pedido = Theme::por_slug("tokyo-night").expect("slug do catálogo");
+    let mut app = App::com_tema(
+        store,
+        ModoCor::Rgb.resolver(pedido),
+        Some(base.config.clone()),
+        ModoCor::Rgb,
+    );
+
+    tecla(&mut app, 'T');
+    tecla(&mut app, 'j');
+    tecla(&mut app, 'j');
+    assert_eq!(app.theme.slug, "tokyo-night-moon", "a pré-visualização aplica");
+
+    let cores = rgb_no_ecra(&app);
+    assert!(
+        !cores.is_empty(),
+        "em `rgb` a caixa tem de escrever RGB (a sonda não pode ser cega)"
+    );
+    assert!(
+        cores.contains(&Color::Rgb(34, 36, 54)),
+        "o fundo do Moon (`#222436`) tem de estar no ecrã: {cores:?}"
     );
 }

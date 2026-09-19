@@ -816,6 +816,11 @@ impl App {
     /// a caixa mostra onde se está, e o `Enter` sem navegar não muda nada. O
     /// modo de onde a caixa abriu fica guardado para ela saber onde voltar, como
     /// na ajuda.
+    ///
+    /// Em `ansi` o tema em uso é o `classico` (o [`ModoCor::resolver`] já o
+    /// trocou no arranque), logo é ele que fica debaixo do cursor — e é o que
+    /// um `Enter` sem navegar grava, porque é o que está a ser desenhado
+    /// (ADR §Adenda A1.3).
     fn abrir_caixa_de_temas(&mut self) {
         self.theme_entrada = self.theme;
         self.theme_cursor = posicao_no_catalogo(self.theme);
@@ -829,6 +834,14 @@ impl App {
     /// — não há cópia da paleta nem um segundo estado de cor. O cursor não dá a
     /// volta: para na primeira e na última posição, como a seleção da lista.
     /// Nada aqui toca no disco: gravar é só o `Enter`.
+    ///
+    /// O candidato passa pelo [`ModoCor::resolver`] como o tema do arranque
+    /// (ADR §Adenda A1.4): em `ansi`, um tema com fundo dá o `classico`, e é
+    /// isso que o ecrã e a caixa desenham. Sem esta passagem, navegar num
+    /// terminal de 16 cores escrevia `48;2;…` e `38;2;…` — medido — com a
+    /// própria caixa a dizer «modo de cor: ansi». O [`App::theme_cursor`]
+    /// continua a marcar a **escolha** (é o que o `Enter` grava): em `ansi`
+    /// pode ser um Tokyo Night, pedido para quando houver truecolor.
     fn mover_na_caixa_de_temas(&mut self, delta: isize) {
         if !matches!(self.mode, InputMode::Theme) {
             return;
@@ -836,10 +849,17 @@ impl App {
         let ultimo = CATALOGO.len() as isize - 1;
         let novo = (self.theme_cursor as isize + delta).clamp(0, ultimo) as usize;
         self.theme_cursor = novo;
-        self.theme = &CATALOGO[novo];
+        self.theme = self.modo_cor.resolver(&CATALOGO[novo]);
     }
 
     /// `Enter` — grava a preferência e fecha.
+    ///
+    /// O *slug* gravado é o do **cursor** — a escolha, que em `ansi` pode ser um
+    /// tema Tokyo Night pedido para quando houver truecolor — e o tema aplicado
+    /// é esse mesmo candidato passado pelo [`ModoCor::resolver`] (ADR §Adenda
+    /// A1.4): sem isso, o `Enter` num terminal de 16 cores punha o ecrã a
+    /// escrever RGB depois de a caixa fechar, com o `ansi` a valer só até à
+    /// primeira tecla.
     ///
     /// Sem caminho de config conhecido (o [`App`] dos testes, ou um sistema sem
     /// `XDG_CONFIG_HOME` nem `HOME`) fecha com o tema aplicado **sem** tentar
@@ -853,7 +873,7 @@ impl App {
             return;
         }
         let escolhido = CATALOGO[self.theme_cursor];
-        self.theme = &CATALOGO[self.theme_cursor];
+        self.theme = self.modo_cor.resolver(&CATALOGO[self.theme_cursor]);
         self.fechar_caixa_de_temas();
 
         let Some(caminho) = self.config_path.clone() else {
